@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("../env.js", () => ({ env: { DATA_DIR: "/tmp" } }))
-vi.mock("./manager.js", () => ({ current: () => null }))
+vi.mock("./manager.js", () => ({ current: () => null, profileDir: () => "/tmp/none" }))
 
 const { cookieStatus, isLoginLike, summarize } = await import("./cookies.js")
 

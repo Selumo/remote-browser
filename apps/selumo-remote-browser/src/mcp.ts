@@ -29,6 +29,7 @@ import {
   listProfiles,
   listRuns,
   updateJob,
+  updateProfile,
 } from "./services.js"
 
 const text = (value: string): CallToolResult => ({ content: [{ type: "text", text: value }] })
@@ -111,7 +112,7 @@ export function buildMcpServer(): McpServer {
     ({ profile }) =>
       guarded(async () => {
         const record = await findProfile(profile)
-        const browser = await openProfile(record.id, record.start_url || undefined)
+        const browser = await openProfile(record)
         return text(`opened "${record.name}"\n${await pageSummary(browser.page)}`)
       }),
   )
@@ -392,26 +393,54 @@ export function buildMcpServer(): McpServer {
           items.map((p) => ({
             id: p.id,
             name: p.name,
-            start_url: p.start_url,
             notes: p.notes,
             open: p.id === open,
+            engine: p.engine || "chromium",
+            device: p.device || "desktop",
+            locale: p.locale || "ko-KR",
+            timezone: p.timezone || null,
+            color_scheme: p.color_scheme || null,
+            stealth: p.stealth,
+            proxy: p.proxy || null,
           })),
         )
       }),
   )
+
+  const profileFields = {
+    notes: z.string().max(2000).optional(),
+    engine: z.enum(["chromium", "firefox", "webkit"]).optional().describe("Browser engine"),
+    device: z.enum(["desktop", "mobile"]).optional(),
+    locale: z.string().optional().describe("e.g. ko-KR"),
+    timezone: z.string().optional().describe("e.g. Asia/Seoul"),
+    color_scheme: z.enum(["light", "dark", ""]).optional(),
+    stealth: z.boolean().optional().describe("Hide automation flags (Chromium), helps with logins"),
+    proxy: z.string().optional().describe("http://host:port or socks5://host:port, empty for none"),
+  }
 
   server.registerTool(
     "profile_create",
     {
       description:
         "Create a profile. Log in to sites inside it once (noVNC or browser_* tools) and it stays logged in.",
-      inputSchema: {
-        name: z.string().min(1).max(100),
-        start_url: z.string().url().optional(),
-        notes: z.string().max(2000).optional(),
-      },
+      inputSchema: { name: z.string().min(1).max(100), ...profileFields },
     },
     (input) => guarded(async () => json(await createProfile(input))),
+  )
+
+  server.registerTool(
+    "profile_update",
+    {
+      description:
+        "Change a profile's name, notes or browser settings. An open profile is reopened to apply them. " +
+        "Switching engine starts that engine logged out (logins are stored per engine).",
+      inputSchema: {
+        profile: z.string(),
+        name: z.string().min(1).max(100).optional(),
+        ...profileFields,
+      },
+    },
+    ({ profile, ...input }) => guarded(async () => json(await updateProfile(profile, input))),
   )
 
   server.registerTool(
@@ -443,7 +472,7 @@ export function buildMcpServer(): McpServer {
     ({ profile, domain, details }) =>
       guarded(async () => {
         const record = await findProfile(profile)
-        const data = await profileCookies(record.id)
+        const data = await profileCookies(record)
         const sites = summarize(data.cookies).filter((g) => !domain || g.domain.includes(domain))
         return json({
           profile: record.name,

@@ -122,9 +122,14 @@ export function viewerHtml(opts: {
     if (!composing) sawProcessKey = false
   })
 
+  // Capture phase: noVNC stops mouse events on its canvas, so a bubbling listener never runs.
   const focusKeyboard = () => setTimeout(() => ime.focus({ preventScroll: true }), 0)
-  document.getElementById("screen").addEventListener("mousedown", focusKeyboard)
-  document.getElementById("screen").addEventListener("touchstart", focusKeyboard, { passive: true })
+  const screenEl = document.getElementById("screen")
+  for (const type of ["pointerdown", "mousedown", "touchstart"]) {
+    screenEl.addEventListener(type, focusKeyboard, { capture: true, passive: true })
+  }
+  window.addEventListener("focus", focusKeyboard)
+  focusKeyboard()
 
   // Called by the dashboard status bar.
   window.viewer = {

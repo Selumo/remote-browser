@@ -1,17 +1,89 @@
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { chromium, type BrowserContext, type Page } from "playwright"
+import {
+  chromium,
+  devices,
+  firefox,
+  webkit,
+  type BrowserContext,
+  type BrowserContextOptions,
+  type Page,
+} from "playwright"
 import { env } from "../env.js"
 
 /**
- * One headful Chromium on the shared Xvfb display, so noVNC shows exactly what the AI and the jobs
+ * One headful browser on the shared Xvfb display, so noVNC shows exactly what the AI and the jobs
  * are driving. Each profile has its own user data directory under DATA_DIR/profiles, which keeps
- * cookies and storage (logins) across restarts.
+ * cookies and storage (logins) across restarts. Data is per engine, so a profile switched to
+ * another engine starts logged out on that engine.
  */
+export type Engine = "chromium" | "firefox" | "webkit"
+
+export type BrowserSettings = {
+  id: string
+  engine?: Engine | ""
+  device?: "desktop" | "mobile" | ""
+  locale?: string
+  timezone?: string
+  color_scheme?: "light" | "dark" | ""
+  stealth?: boolean
+  proxy?: string
+}
+
 export type ActiveBrowser = {
   profileId: string
+  engine: Engine
   context: BrowserContext
   page: Page
+}
+
+export const ENGINES: Engine[] = ["chromium", "firefox", "webkit"]
+
+/** Chromium keeps the original path so profiles made before engines existed keep their logins. */
+export function profileDir(profileId: string, engine: Engine): string {
+  return path.join(
+    env.DATA_DIR,
+    "profiles",
+    engine === "chromium" ? profileId : `${profileId}-${engine}`,
+  )
+}
+
+function contextOptions(
+  s: BrowserSettings,
+  engine: Engine,
+): BrowserContextOptions & {
+  args?: string[]
+  ignoreDefaultArgs?: string[]
+} {
+  const base: BrowserContextOptions & { args?: string[]; ignoreDefaultArgs?: string[] } = {
+    locale: s.locale || "ko-KR",
+    timezoneId: s.timezone || env.SCHEDULE_TZ,
+    ...(s.color_scheme ? { colorScheme: s.color_scheme } : {}),
+    ...(s.proxy ? { proxy: { server: s.proxy } } : {}),
+  }
+  if (s.device === "mobile") {
+    // Phone sized page inside the desktop window. DPR 1: measured no memory gain from higher.
+    const d = engine === "webkit" ? devices["iPhone 13"] : devices["Pixel 7"]
+    const { isMobile, hasTouch, deviceScaleFactor: _dpr, defaultBrowserType: _b, ...rest } = d
+    Object.assign(base, rest, { deviceScaleFactor: 1 })
+    // Firefox has no mobile emulation; it gets the size and user agent only.
+    if (engine !== "firefox") Object.assign(base, { isMobile, hasTouch })
+  } else {
+    base.viewport = null
+  }
+  if (engine === "chromium") {
+    base.args = [
+      "--start-maximized",
+      "--window-position=0,0",
+      `--window-size=${env.SCREEN_WIDTH},${env.SCREEN_HEIGHT}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--hide-crash-restore-bubble",
+      ...(s.stealth ? ["--disable-blink-features=AutomationControlled"] : []),
+    ]
+    if (s.stealth) base.ignoreDefaultArgs = ["--enable-automation"]
+  }
+  return base
 }
 
 let active: ActiveBrowser | null = null
@@ -33,30 +105,29 @@ export function requireActive(): ActiveBrowser {
   return active
 }
 
-export async function openProfile(profileId: string, startUrl?: string): Promise<ActiveBrowser> {
+/** Opens a profile; an already open one is reused unless `reopen` (settings changed). */
+export async function openProfile(
+  settings: BrowserSettings,
+  opts: { reopen?: boolean } = {},
+): Promise<ActiveBrowser> {
+  const profileId = settings.id
   if (!PROFILE_ID.test(profileId)) throw new Error("Invalid profile id")
   if (opening) await opening.catch(() => undefined)
-  if (active?.profileId === profileId) return active
+  if (active?.profileId === profileId && !opts.reopen) return active
   if (active) await closeActive()
 
+  const engine: Engine = settings.engine || "chromium"
   opening = (async () => {
-    const dir = path.join(env.DATA_DIR, "profiles", profileId)
+    const dir = profileDir(profileId, engine)
     await mkdir(dir, { recursive: true })
-    const context = await chromium.launchPersistentContext(dir, {
+    const type = engine === "firefox" ? firefox : engine === "webkit" ? webkit : chromium
+    const context = await type.launchPersistentContext(dir, {
       headless: false,
-      viewport: null,
-      args: [
-        "--start-maximized",
-        "--window-position=0,0",
-        `--window-size=${env.SCREEN_WIDTH},${env.SCREEN_HEIGHT}`,
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--hide-crash-restore-bubble",
-      ],
       env: { ...process.env, DISPLAY: env.DISPLAY },
+      ...contextOptions(settings, engine),
     })
     const page = context.pages()[0] ?? (await context.newPage())
-    const browser: ActiveBrowser = { profileId, context, page }
+    const browser: ActiveBrowser = { profileId, engine, context, page }
     // Follow popups opened by the page (target=_blank, window.open). Chrome also creates pages
     // with no opener, such as a prerendered new tab page, which must not steal the focus.
     context.on("page", (p) => {
@@ -67,7 +138,6 @@ export async function openProfile(profileId: string, startUrl?: string): Promise
     context.on("close", () => {
       if (active === browser) active = null
     })
-    if (startUrl) await page.goto(startUrl).catch(() => undefined)
     active = browser
     return browser
   })()

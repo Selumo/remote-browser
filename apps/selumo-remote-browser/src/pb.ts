@@ -4,8 +4,16 @@ import { env } from "./env.js"
 export type Profile = {
   id: string
   name: string
+  /** Unused since profile settings: kept in the schema for old records. */
   start_url: string
   notes: string
+  engine: "chromium" | "firefox" | "webkit" | ""
+  device: "desktop" | "mobile" | ""
+  locale: string
+  timezone: string
+  color_scheme: "light" | "dark" | ""
+  stealth: boolean
+  proxy: string
   created: string
   updated: string
 }

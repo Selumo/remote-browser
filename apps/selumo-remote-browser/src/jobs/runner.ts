@@ -154,7 +154,7 @@ async function execute(job: Job, runId: string, profile: Profile, steps: Step[])
   let status: JobRun["status"] = "success"
   const ctx: StepContext = { page: undefined as unknown as Page, job, runId, index: 0, items: 0 }
   try {
-    const browser = await openProfile(profile.id)
+    const browser = await openProfile(profile)
     await log(runId, "info", `profile "${profile.name}" opened`)
     for (const [index, step] of steps.entries()) {
       ctx.page = browser.page

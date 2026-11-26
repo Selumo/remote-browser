@@ -200,7 +200,6 @@ app.post("/profiles", requireUser, async (c) => {
   const form = await c.req.formData()
   await createProfile({
     name: formText(form, "name"),
-    start_url: formText(form, "start_url"),
     notes: formText(form, "notes"),
   })
   return c.html(await profileList())
@@ -213,7 +212,7 @@ app.delete("/profiles/:id", requireUser, async (c) => {
 
 app.post("/profiles/:id/open", requireUser, async (c) => {
   const profile = await findProfile(c.req.param("id"))
-  const browser = await openProfile(profile.id, profile.start_url || undefined)
+  const browser = await openProfile(profile)
   return c.html(
     <BrowserStatus profile={profile} url={browser.page.url()} running={runningRunId()} />,
   )
@@ -230,7 +229,7 @@ app.get("/profiles", requireUser, async (c) => {
   const profiles = await listProfiles()
   const id = c.req.query("id")
   const selected = (id ? profiles.find((p) => p.id === id) : profiles[0]) ?? null
-  const data = selected ? await profileCookies(selected.id) : null
+  const data = selected ? await profileCookies(selected) : null
   return c.html(
     <ProfilesPage
       user={c.get("user")}
@@ -247,7 +246,6 @@ app.post("/profiles/new", requireUser, async (c) => {
   const form = await c.req.formData()
   const profile = await createProfile({
     name: formText(form, "name"),
-    start_url: formText(form, "start_url"),
     notes: formText(form, "notes"),
   })
   return c.redirect(`/profiles?id=${profile.id}`)

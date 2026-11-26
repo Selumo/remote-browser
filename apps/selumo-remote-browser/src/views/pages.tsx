@@ -626,7 +626,7 @@ export const ProfilesPage: FC<{
   profiles: Profile[]
   openId: string | null
   selected: Profile | null
-  source: "live" | "disk" | null
+  source: "live" | "disk" | "closed" | null
   summary: DomainSummary[]
 }> = ({ user, profiles, openId, selected, source, summary }) => (
   <Layout title="프로필 · Remote Browser" user={user} section="profiles">

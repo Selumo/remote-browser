@@ -1,5 +1,6 @@
 import { Cron } from "croner"
-import { closeActive, current } from "./browser/manager.js"
+import { z } from "zod"
+import { closeActive, current, openProfile } from "./browser/manager.js"
 import { parseSteps, type Step } from "./jobs/steps.js"
 import { ensureSuperuser, pb, type Job, type JobRun, type Profile } from "./pb.js"
 
@@ -21,17 +22,70 @@ export async function findProfile(ref: string): Promise<Profile> {
     })
 }
 
-export async function createProfile(input: {
-  name: string
-  start_url?: string | undefined
-  notes?: string | undefined
-}): Promise<Profile> {
+/** Profile fields a person or the AI can set. Empty strings mean the app default. */
+export const ProfileInput = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  notes: z.string().max(2000).optional(),
+  engine: z.enum(["chromium", "firefox", "webkit"]).optional(),
+  device: z.enum(["desktop", "mobile"]).optional(),
+  locale: z
+    .string()
+    .trim()
+    .regex(/^$|^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, "locale like ko-KR")
+    .optional(),
+  timezone: z
+    .string()
+    .trim()
+    .refine((tz) => !tz || isTimeZone(tz), "unknown time zone, e.g. Asia/Seoul")
+    .optional(),
+  color_scheme: z.enum(["light", "dark", ""]).optional(),
+  stealth: z.boolean().optional(),
+  proxy: z
+    .string()
+    .trim()
+    .regex(/^$|^(https?|socks5?):\/\/[^\s]+$/, "proxy like http://host:port or socks5://host:port")
+    .optional(),
+})
+export type ProfileInput = z.infer<typeof ProfileInput>
+
+function isTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+const SETTING_KEYS = [
+  "engine",
+  "device",
+  "locale",
+  "timezone",
+  "color_scheme",
+  "stealth",
+  "proxy",
+] as const
+
+export async function createProfile(input: ProfileInput & { name: string }): Promise<Profile> {
+  const data = ProfileInput.parse(input)
   await ensureSuperuser()
   return pb.collection("profiles").create<Profile>({
-    name: input.name.trim(),
-    start_url: input.start_url?.trim() ?? "",
-    notes: input.notes?.trim() ?? "",
+    engine: "chromium",
+    device: "desktop",
+    stealth: true,
+    ...data,
   })
+}
+
+/** Updates a profile; an open browser is reopened when a browser setting changed. */
+export async function updateProfile(ref: string, input: ProfileInput): Promise<Profile> {
+  const before = await findProfile(ref)
+  const data = ProfileInput.parse(input)
+  const updated = await pb.collection("profiles").update<Profile>(before.id, data)
+  const changed = SETTING_KEYS.some((k) => before[k] !== updated[k])
+  if (changed && current()?.profileId === updated.id) await openProfile(updated, { reopen: true })
+  return updated
 }
 
 export async function deleteProfile(id: string): Promise<void> {

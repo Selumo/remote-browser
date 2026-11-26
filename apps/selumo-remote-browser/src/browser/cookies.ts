@@ -2,8 +2,7 @@ import { copyFile, mkdtemp, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { env } from "../env.js"
-import { current } from "./manager.js"
+import { current, profileDir, type Engine } from "./manager.js"
 
 /**
  * What a profile has saved: cookie metadata only. Values are never read or returned, so this
@@ -52,7 +51,7 @@ export function isLoginLike(name: string): boolean {
 }
 
 async function readDisk(profileId: string): Promise<CookieInfo[]> {
-  const file = path.join(env.DATA_DIR, "profiles", profileId, "Default", "Cookies")
+  const file = path.join(profileDir(profileId, "chromium"), "Default", "Cookies")
   if (!(await stat(file).catch(() => null))) return []
   const dir = await mkdtemp(path.join(os.tmpdir(), "rb-cookies-"))
   try {
@@ -87,9 +86,14 @@ async function readDisk(profileId: string): Promise<CookieInfo[]> {
   }
 }
 
-export async function profileCookies(
-  profileId: string,
-): Promise<{ source: "live" | "disk"; cookies: CookieInfo[] }> {
+export type CookieSource = "live" | "disk" | "closed"
+
+/** Live from an open browser (any engine); from disk only for Chromium, else "closed". */
+export async function profileCookies(profile: {
+  id: string
+  engine?: Engine | ""
+}): Promise<{ source: CookieSource; cookies: CookieInfo[] }> {
+  const profileId = profile.id
   const open = current()
   if (open?.profileId === profileId) {
     const cookies = await open.context.cookies()
@@ -104,6 +108,7 @@ export async function profileCookies(
       })),
     }
   }
+  if ((profile.engine || "chromium") !== "chromium") return { source: "closed", cookies: [] }
   return { source: "disk", cookies: await readDisk(profileId) }
 }
 
