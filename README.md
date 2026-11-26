@@ -36,8 +36,10 @@ docker run --rm -p 3000:3000 --shm-size 2g --env-file .env -v rb-data:/data selu
    - **사이트 플레이북:** 제목이 `플레이북: <사이트>`(예: `플레이북: instagram.com`)인 노트예요. 그 사이트에서 일하는 요령(누를 곳, 성공 표시, 함정, 선택자)을 적어 두면, AI가 그 사이트에 처음 들어갈 때 페이지 요약에 안내가 붙어 먼저 읽어요. 플레이북이 없으면 끝난 뒤 만들라는 안내가 붙어요. AI가 배운 것을 덧붙이니까 쓸수록 나아져요. 문서 메뉴의 "사이트 플레이북" 칸에 주소를 넣으면 열리거나 틀이 채워진 새 노트가 열리고, `#playbook` 태그로 모아 볼 수 있어요.
 4. **데이터:** 작업별 수집 건수를 한눈에 보고, 작업을 골라 최근 데이터를 표로 보거나 CSV로 받아요. 원격 브라우저가 내려받은 파일과 내 PC에서 올린 파일도 여기서 받거나 지울 수 있어요.
 5. **이미지:** 지금 원격 화면을 캡처하거나 파일을 올려서 저장해요. 작업의 `screenshot` 단계와 MCP `images`(capture)로 찍은 것도 여기 모여요.
-6. **MCP 설정:** 상단 MCP 메뉴에서 주소, 토큰(누를 때만 보여요), `claude mcp add` 명령, `.mcp.json`을 복사할 수 있어요.
-7. **MCP:** `https://<호스트>/mcp` (Streamable HTTP). `Authorization: Bearer <MCP_TOKEN>`이나 Cloudflare Access 인증으로 붙어요.
+6. **MCP 설정:** 상단 MCP 메뉴에 클라이언트별 안내가 있어요. Claude Code와 Claude Desktop은 한 줄 설치 명령(토큰을 물어보고 `~/.config/remote-browser`에만 저장), 클라우드 세션은 네트워크 시크릿 값과 넣을 파일, claude.ai 웹·폰은 커넥터 주소를 보여 줘요. "지금 확인"으로 연결과 도구 목록을 바로 확인할 수 있어요.
+7. **MCP:** 주소가 두 개예요(같은 서버, Streamable HTTP).
+   - `https://<호스트>/mcp`: `Authorization: Bearer <MCP_TOKEN>`. Claude Code, Desktop, 클라우드 세션, 기타 클라이언트용
+   - `https://<호스트>/mcp-oauth`: Cloudflare Access(관리형 OAuth) 뒤에 두고, Access가 서명한 JWT를 앱이 검증해요. claude.ai 웹·폰 커넥터용. `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`를 넣어야 켜지고, `ALLOWED_EMAILS`를 넣으면 그 이메일만 받아요
    도구는 주제별로 18개로 묶여 있고, 각 도구는 `action` 인자로 세부 동작을 골라요. 도구 설명 전체가 약 4,500토큰이에요.
 
    | 도구 | 하는 일 |

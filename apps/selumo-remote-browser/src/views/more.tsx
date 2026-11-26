@@ -426,21 +426,44 @@ export const ImagesPage: FC<{
 
 // ---------- MCP setup ----------
 
-export const McpPage: FC<{ user: string; url: string; hasToken: boolean; emails: string[] }> = ({
-  user,
-  url,
-  hasToken,
-  emails,
-}) => {
-  const add = `claude mcp add --transport http remote-browser ${url} --header "Authorization: Bearer $MCP_TOKEN"`
-  const json = JSON.stringify(
+const Copy: FC<{ id: string; text: string; block?: boolean }> = ({ id, text, block }) => (
+  <div class="copy">
+    {block ? <pre id={id}>{text}</pre> : <code id={id}>{text}</code>}
+    <button type="button" onclick={`rbCopy('${id}', this)`}>
+      복사
+    </button>
+  </div>
+)
+
+export const McpPage: FC<{
+  user: string
+  origin: string
+  hasToken: boolean
+  oauthReady: boolean
+}> = ({ user, origin, hasToken, oauthReady }) => {
+  const url = `${origin}/mcp`
+  const oauthUrl = `${origin}/mcp-oauth`
+  const host = new URL(origin).host
+  const codeCmd = `bash -c "$(curl -fsSL ${origin}/setup/claude-code.sh)"`
+  const desktopCmd = `bash -c "$(curl -fsSL ${origin}/setup/claude-desktop.sh)"`
+  const mcpJson = JSON.stringify(
+    { mcpServers: { "remote-browser": { type: "http", url } } },
+    null,
+    2,
+  )
+  const settingsJson = JSON.stringify(
+    {
+      enableAllProjectMcpServers: true,
+      enabledMcpjsonServers: ["remote-browser"],
+      permissions: { allow: ["mcp__remote-browser"] },
+    },
+    null,
+    2,
+  )
+  const genericJson = JSON.stringify(
     {
       mcpServers: {
-        "remote-browser": {
-          type: "http",
-          url,
-          headers: { Authorization: "Bearer ${MCP_TOKEN}" },
-        },
+        "remote-browser": { type: "http", url, headers: { Authorization: "Bearer <MCP_TOKEN>" } },
       },
     },
     null,
@@ -451,13 +474,13 @@ export const McpPage: FC<{ user: string; url: string; hasToken: boolean; emails:
       <div class="grid">
         <section class="box">
           <h2>접속 정보</h2>
-          <label>MCP 주소</label>
-          <div class="copy">
-            <code id="mcp-url">{url}</code>
-            <button type="button" onclick="rbCopy('mcp-url', this)">
-              복사
-            </button>
-          </div>
+          <label>토큰으로 접속 (Claude Code, Desktop, 클라우드 세션, 기타)</label>
+          <Copy id="mcp-url" text={url} />
+          <label>OAuth로 접속 (claude.ai 웹·폰 커넥터)</label>
+          <Copy id="mcp-oauth-url" text={oauthUrl} />
+          {oauthReady ? null : (
+            <p class="muted">Cloudflare Access가 아직 설정되지 않아 이 주소는 꺼져 있어요.</p>
+          )}
           <label>토큰 (MCP_TOKEN)</label>
           {hasToken ? (
             <div class="copy">
@@ -472,33 +495,86 @@ export const McpPage: FC<{ user: string; url: string; hasToken: boolean; emails:
           ) : (
             <p class="muted">MCP_TOKEN이 설정되지 않았어요. 서버 환경 변수에 넣어 주세요.</p>
           )}
-          {emails.length ? (
-            <p class="muted">
-              Cloudflare Access로 로그인한 {emails.join(", ")} 계정은 토큰 없이도 접속할 수 있어요.
-            </p>
-          ) : null}
-          <p class="muted">
-            Cloudflare Access가 앞에 있으면 서비스 토큰 헤더(CF-Access-Client-Id,
-            CF-Access-Client-Secret)도 함께 보내야 해요.
+          <h3>연결 확인</h3>
+          <p>
+            <button type="button" class="primary" onclick="rbTest(this)">
+              지금 확인
+            </button>{" "}
+            <span id="mcp-test" class="muted" />
           </p>
+          <details id="mcp-tools">
+            <summary>도구 목록</summary>
+            <p class="muted">연결 확인을 누르면 여기에 나와요.</p>
+          </details>
         </section>
         <section class="box">
-          <h2>설정 복사</h2>
-          <label>Claude Code (터미널)</label>
-          <div class="copy">
-            <pre id="mcp-add">{add}</pre>
-            <button type="button" onclick="rbCopy('mcp-add', this)">
-              복사
-            </button>
-          </div>
-          <label>.mcp.json</label>
-          <div class="copy">
-            <pre id="mcp-json">{json}</pre>
-            <button type="button" onclick="rbCopy('mcp-json', this)">
-              복사
-            </button>
-          </div>
-          <p class="muted">$MCP_TOKEN 자리에 토큰을 넣거나, 같은 이름의 환경 변수로 두고 쓰세요.</p>
+          <h2>클라이언트별 설정</h2>
+          <details class="guide" open>
+            <summary>Claude Code (macOS, Linux)</summary>
+            <p>
+              터미널에 붙여 넣으면 토큰을 물어봐요. 위에서 토큰을 복사해 붙여 넣으세요. 토큰은{" "}
+              <code>~/.config/remote-browser/mcp-token</code>에만 저장되고 Claude 설정에는 남지
+              않아요.
+            </p>
+            <Copy id="cmd-code" text={codeCmd} block />
+            <p class="muted">
+              토큰을 바꿀 때는 같은 명령 끝에 <code>_ --new-token</code>을 붙여 다시 실행해요. 확인:{" "}
+              <code>claude mcp get remote-browser</code>
+            </p>
+          </details>
+          <details class="guide">
+            <summary>Claude Desktop (macOS, Linux)</summary>
+            <p>
+              Desktop 설정은 원격 서버에 헤더를 붙일 수 없어서, 내 컴퓨터의 중계
+              스크립트(mcp-remote)를 거쳐요. Node.js가 필요해요. 설정 파일은 백업한 뒤 고쳐요.
+            </p>
+            <Copy id="cmd-desktop" text={desktopCmd} block />
+            <p class="muted">끝나면 Claude Desktop을 완전히 종료했다가 다시 여세요.</p>
+          </details>
+          <details class="guide">
+            <summary>클라우드 세션 (claude.ai/code)</summary>
+            <ol>
+              <li>
+                환경 설정 → 네트워크 액세스: 제한됨, 허용 도메인에 <code>{host}</code>
+              </li>
+              <li>
+                네트워크 시크릿 → 시크릿 추가: 유형 <code>Bearer</code>, 웹사이트{" "}
+                <code>{host}</code>, 경로 <code>/mcp</code>, 헤더 <code>Authorization</code> ·{" "}
+                <code>Bearer</code> · 값에 토큰. 프록시가 헤더를 붙여서 세션 안의 Claude는 토큰을 못
+                봐요. 토큰을 환경 변수로 넣지 마세요.
+              </li>
+              <li>환경의 저장소에 아래 두 파일을 넣어요.</li>
+            </ol>
+            <label>.mcp.json</label>
+            <Copy id="cloud-mcp" text={mcpJson} block />
+            <label>.claude/settings.json</label>
+            <Copy id="cloud-settings" text={settingsJson} block />
+            <p class="muted">설정을 바꾼 뒤에는 새 세션을 열어야 반영돼요.</p>
+          </details>
+          <details class="guide">
+            <summary>claude.ai 웹·폰 앱 (커넥터)</summary>
+            {oauthReady ? (
+              <ol>
+                <li>claude.ai → 설정 → 커넥터 → 사용자 지정 커넥터 추가</li>
+                <li>
+                  URL에 <code>{oauthUrl}</code>
+                </li>
+                <li>연결을 누르면 Cloudflare 로그인 창이 떠요. 허용된 이메일로 로그인하세요.</li>
+              </ol>
+            ) : (
+              <p class="muted">
+                Cloudflare Access(관리형 OAuth)를 /mcp-oauth 앞에 두고 CF_ACCESS_TEAM_DOMAIN,
+                CF_ACCESS_AUD를 넣으면 켜져요.
+              </p>
+            )}
+          </details>
+          <details class="guide">
+            <summary>기타 클라이언트 (Cursor, VS Code 등)</summary>
+            <p>
+              헤더를 넣을 수 있는 MCP 클라이언트라면 이 형식이에요. &lt;MCP_TOKEN&gt; 자리에 토큰.
+            </p>
+            <Copy id="generic-json" text={genericJson} block />
+          </details>
         </section>
       </div>
       <script
@@ -521,6 +597,23 @@ async function rbToken(btn) {
   el.textContent = t; btn.textContent = "숨기기"
 }
 async function rbCopyToken(btn) { const t = await rbFetchToken(); if (t) rbCopyText(t, btn) }
+async function rbTest(btn) {
+  const out = document.getElementById("mcp-test")
+  out.textContent = "확인 중…"
+  const r = await fetch("/mcp-setup/test", { method: "POST" }).then((x) => x.json()).catch((e) => ({ ok: false, error: String(e) }))
+  out.textContent = r.ok ? "정상: 도구 " + r.tools.length + "개, " + r.ms + "ms" : "실패: " + (r.error || "HTTP " + r.status)
+  if (r.ok) {
+    const box = document.getElementById("mcp-tools")
+    box.innerHTML = "<summary>도구 목록 (" + r.tools.length + ")</summary>"
+    const ul = document.createElement("dl")
+    for (const t of r.tools) {
+      const dt = document.createElement("dt"); dt.textContent = t.name
+      const dd = document.createElement("dd"); dd.textContent = t.description
+      ul.append(dt, dd)
+    }
+    box.append(ul); box.open = true
+  }
+}
 `,
         }}
       />

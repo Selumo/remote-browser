@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto"
 import type { Context, MiddlewareHandler } from "hono"
 import { deleteCookie, getCookie, setCookie } from "hono/cookie"
 import PocketBase from "pocketbase"
-import { allowedEmails, env } from "./env.js"
+import { env } from "./env.js"
 
 export const SESSION_COOKIE = "rb_session"
 const CACHE_MS = 60_000
@@ -69,8 +69,8 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /**
- * MCP endpoint: either the static bearer token, or an identity that Cloudflare Access already
- * authenticated (the origin is only reachable through the tunnel, so the header is trusted).
+ * /mcp: the static bearer token only. Cloudflare Access identities are accepted on /mcp-oauth
+ * alone, after verifying Access's signed JWT (cfaccess.ts); a plain email header is never trusted.
  */
 export function mcpIdentity(headers: {
   get(name: string): string | null | undefined
@@ -78,8 +78,6 @@ export function mcpIdentity(headers: {
   const auth = headers.get("authorization") ?? ""
   const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : ""
   if (env.MCP_TOKEN && bearer && safeEqual(bearer, env.MCP_TOKEN)) return "token"
-  const email = (headers.get("cf-access-authenticated-user-email") ?? "").toLowerCase()
-  if (email && allowedEmails.has(email)) return email
   return null
 }
 

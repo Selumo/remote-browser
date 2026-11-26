@@ -31,12 +31,14 @@ import {
   saveDoc,
   docHref,
 } from "./docs.js"
-import { allowedEmails, env } from "./env.js"
+import { env } from "./env.js"
 import { captureImage, deleteImage, findImage, imageFile, listImages, saveImage } from "./images.js"
 import { allItems, columnsOf, listItems, toCsv } from "./jobs/crawl.js"
 import { runEvents, runningRunId, startRun, type RunEvent } from "./jobs/runner.js"
 import { nextRun, startScheduler } from "./jobs/scheduler.js"
 import { buildMcpServer } from "./mcp.js"
+import { accessConfigured, accessIdentity } from "./cfaccess.js"
+import { claudeCodeScript, claudeDesktopScript } from "./setup.js"
 import { answerHelp, currentHelp } from "./browser/help.js"
 import { detectLogin } from "./browser/login.js"
 import { PLAYBOOK_PREFIX, playbookTemplate } from "./browser/playbook.js"
@@ -836,12 +838,51 @@ app.get("/mcp-setup", requireUser, (c) =>
   c.html(
     <McpPage
       user={c.get("user")}
-      url={`${publicOrigin(c)}/mcp`}
+      origin={publicOrigin(c)}
       hasToken={Boolean(env.MCP_TOKEN)}
-      emails={[...allowedEmails]}
+      oauthReady={accessConfigured()}
     />,
   ),
 )
+
+// Installers hold only this server's address, no secrets, so they are served without login.
+app.get("/setup/claude-code.sh", (c) =>
+  c.text(claudeCodeScript(publicOrigin(c)), 200, {
+    "content-type": "text/x-shellscript; charset=utf-8",
+  }),
+)
+app.get("/setup/claude-desktop.sh", (c) =>
+  c.text(claudeDesktopScript(publicOrigin(c)), 200, {
+    "content-type": "text/x-shellscript; charset=utf-8",
+  }),
+)
+
+/** Calls this server's own /mcp with the token, as a client would, and lists the tools. */
+app.post("/mcp-setup/test", requireUser, async (c) => {
+  if (!env.MCP_TOKEN) return c.json({ ok: false, error: "MCP_TOKEN이 설정되지 않았어요" })
+  const started = Date.now()
+  const res = await fetch(`http://127.0.0.1:${env.PORT}/mcp`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.MCP_TOKEN}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    signal: AbortSignal.timeout(15_000),
+  }).catch((e: unknown) => e as Error)
+  if (res instanceof Error) return c.json({ ok: false, error: res.message })
+  const data = (await res.json().catch(() => null)) as {
+    result?: { tools?: { name: string; description?: string }[] }
+  } | null
+  const tools = data?.result?.tools ?? []
+  return c.json({
+    ok: res.ok && tools.length > 0,
+    status: res.status,
+    ms: Date.now() - started,
+    tools: tools.map((t) => ({ name: t.name, description: t.description ?? "" })),
+  })
+})
 
 /** The token is only handed out on request (POST, logged-in user), never rendered into the page. */
 app.post("/mcp-setup/token", requireUser, (c) => {
@@ -857,8 +898,8 @@ app.onError((e, c) => {
 
 // ---- MCP (Streamable HTTP, stateless; browser state lives in this process) ----
 
-app.post("/mcp", async (c) => {
-  if (!mcpIdentity(c.req.raw.headers)) return c.json({ error: "unauthorized" }, 401)
+/** Runs one MCP request (stateless transport, a fresh server per request). */
+async function serveMcp(c: Context<App>) {
   const body: unknown = await c.req.json().catch(() => null)
   if (body === null) return c.json({ error: "invalid JSON" }, 400)
   const server = buildMcpServer()
@@ -874,8 +915,22 @@ app.post("/mcp", async (c) => {
   await server.connect(transport)
   await transport.handleRequest(incoming, outgoing, body)
   return RESPONSE_ALREADY_SENT
+}
+
+/** Token clients: Claude Code, Claude Desktop, cloud sessions. */
+app.post("/mcp", async (c) => {
+  if (!mcpIdentity(c.req.raw.headers)) return c.json({ error: "unauthorized" }, 401)
+  return serveMcp(c)
 })
 
+/** claude.ai connectors: Cloudflare Access with managed OAuth in front, JWT verified here. */
+app.post("/mcp-oauth", async (c) => {
+  if (!accessConfigured()) return c.json({ error: "Cloudflare Access is not configured" }, 503)
+  if (!(await accessIdentity(c.req.raw.headers))) return c.json({ error: "unauthorized" }, 401)
+  return serveMcp(c)
+})
+
+app.on(["GET", "DELETE"], "/mcp-oauth", (c) => c.body(null, 405, { Allow: "POST" }))
 app.on(["GET", "DELETE"], "/mcp", (c) => c.body(null, 405, { Allow: "POST" }))
 
 // ---- start ----

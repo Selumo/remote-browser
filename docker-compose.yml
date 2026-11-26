@@ -1,6 +1,6 @@
 # Dokploy: create a Compose service from this repository, set the variables from .env.example in
-# the Environment tab, and add a domain for service `app`, port 3000. Put Cloudflare Access in
-# front of that hostname.
+# the Environment tab, and add a domain for service `app`, port 3000. For claude.ai connectors put
+# Cloudflare Access (managed OAuth) in front of /mcp-oauth only.
 services:
   app:
     build:
@@ -17,6 +17,8 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - MCP_TOKEN=${MCP_TOKEN:-}
       - ALLOWED_EMAILS=${ALLOWED_EMAILS:-}
+      - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
+      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - SCHEDULE_TZ=${SCHEDULE_TZ:-Asia/Seoul}
       - CHALLENGE_WAIT_MINUTES=${CHALLENGE_WAIT_MINUTES:-10}

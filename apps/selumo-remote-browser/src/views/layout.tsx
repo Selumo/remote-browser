@@ -90,6 +90,12 @@ h3 { font-size: 13px; margin: 16px 0 6px; }
 .gallery img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-bottom: 1px solid #000; }
 .gallery figcaption { padding: 6px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .gallery .url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* MCP page guides */
+details.guide { border: 1px solid #000; margin-top: -1px; padding: 0 10px; }
+details.guide > summary { padding: 6px 0; cursor: pointer; font-weight: bold; }
+details.guide[open] { padding-bottom: 10px; }
+#mcp-tools dt { font-weight: bold; margin-top: 6px; }
+#mcp-tools dd { margin: 0 0 0 12px; color: #444; }
 /* Copyable values */
 .copy { display: flex; gap: 8px; align-items: flex-start; }
 .copy code, .copy pre { flex: 1; min-width: 0; margin: 0; padding: 6px 8px; border: 1px solid #000; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

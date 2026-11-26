@@ -21,7 +21,11 @@ const Env = z.object({
     .optional()
     .transform((v) => (v ? v : undefined))
     .refine((v) => v === undefined || v.length >= 32, "MCP_TOKEN must be at least 32 characters"),
+  /** Emails allowed on /mcp-oauth (in addition to the Access policy). Empty: whoever Access lets in. */
   ALLOWED_EMAILS: z.string().default(""),
+  /** Cloudflare Access for /mcp-oauth: team domain (xxx.cloudflareaccess.com) and the app's AUD tag. */
+  CF_ACCESS_TEAM_DOMAIN: z.string().default(""),
+  CF_ACCESS_AUD: z.string().default(""),
   COOKIE_SECURE: z.enum(["true", "false"]).default("true"),
   /** How long a job waits for a person to clear a bot check before failing. */
   CHALLENGE_WAIT_MINUTES: z.coerce.number().min(0).max(120).default(10),

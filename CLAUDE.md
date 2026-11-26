@@ -37,6 +37,8 @@ apps/selumo-remote-browser/src/
   jobs/            Step schema, runner, cron scheduler, crawl extraction, CSV
   docs.ts          Markdown notes: [[wiki links]], ![[image]] embeds, #tags, backlinks
   images.ts        Stored images (captures, uploads, job screenshots) in PocketBase
+  cfaccess.ts      Cloudflare Access JWT verification for /mcp-oauth
+  setup.ts         One-line installers for Claude Code and Claude Desktop (/setup/*.sh)
   mcp.ts           MCP tools, 18 grouped by subject with an `action` argument; compact JSON
                    output. Add new actions to an existing tool before adding a tool
   views/           hono/jsx pages (more.tsx: docs, data, images, MCP setup; kasm.ts: viewer CSS)
@@ -52,5 +54,8 @@ docs/              Notes for maintainers (remote-view.md: KasmVNC findings)
 - Any new dashboard action gets a matching MCP tool, through `services.ts`.
 - PocketBase and KasmVNC listen on 127.0.0.1 only. Port 3000 is the only exposed port.
 - Every dashboard route and the VNC WebSocket require a PocketBase user session.
-- `/mcp` requires `MCP_TOKEN` as a bearer token or a Cloudflare Access email listed in `ALLOWED_EMAILS`.
+- `/mcp` requires `MCP_TOKEN` as a bearer token, nothing else. `/mcp-oauth` sits behind Cloudflare
+  Access (managed OAuth, for claude.ai connectors) and requires a valid Access JWT
+  (`Cf-Access-Jwt-Assertion`, checked against `CF_ACCESS_TEAM_DOMAIN` keys and `CF_ACCESS_AUD`);
+  email headers alone are never trusted. `/setup/*.sh` installers are public and hold no secrets.
 - Never commit `.env` files. Secrets go into Dokploy's Environment tab.
