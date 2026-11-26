@@ -5,7 +5,7 @@ import type { Duplex } from "node:stream"
 import { serve, type HttpBindings } from "@hono/node-server"
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { Hono } from "hono"
+import { type Context, Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import {
   type AuthVars,
@@ -18,10 +18,20 @@ import {
   verifyToken,
 } from "./auth.js"
 import { profileCookies, summarize } from "./browser/cookies.js"
-import { available, currentResolution, QUALITY_FOR, setResolution } from "./browser/vnc.js"
-import { focusedValue, insertAtFocus } from "./browser/actions.js"
-import { closeActive, current, openProfile, requireActive } from "./browser/manager.js"
-import { env } from "./env.js"
+import { currentQuality, QUALITIES, setQuality } from "./browser/vnc.js"
+import { closeActive, current, openProfile } from "./browser/manager.js"
+import {
+  allTags,
+  backlinks,
+  deleteDoc,
+  findDoc,
+  listDocs,
+  renderMarkdown,
+  saveDoc,
+  docHref,
+} from "./docs.js"
+import { allowedEmails, env } from "./env.js"
+import { captureImage, deleteImage, findImage, imageFile, listImages, saveImage } from "./images.js"
 import { allItems, columnsOf, listItems, toCsv } from "./jobs/crawl.js"
 import { runEvents, runningRunId, startRun, type RunEvent } from "./jobs/runner.js"
 import { nextRun, startScheduler } from "./jobs/scheduler.js"
@@ -50,7 +60,8 @@ import {
   updateProfile,
 } from "./services.js"
 import { serveFile, vendorFiles } from "./static.js"
-import { viewerHtml } from "./views/viewer.js"
+import { KASM_STYLE } from "./views/kasm.js"
+import { DataPage, DocEditPage, DocPage, DocsPage, ImagesPage, McpPage } from "./views/more.js"
 import {
   BrowserPage,
   BrowserStatus,
@@ -123,57 +134,66 @@ app.post("/logout", (c) => {
   return c.redirect("/login")
 })
 
-// ---- noVNC static files (the WebSocket is proxied in the upgrade handler below) ----
+// ---- remote screen: KasmVNC's web client (WebSocket proxied below) ----
 
-app.get("/novnc/*", requireUser, (c) =>
-  serveFile(env.NOVNC_DIR, c.req.path.slice("/novnc/".length)),
-)
+app.get("/kasm/vnc.html", requireUser, async (c) => {
+  const res = await serveFile(env.KASM_WWW, "vnc.html")
+  if (!res.ok) return res
+  const html = (await res.text()).replace("<head>", `<head>${KASM_STYLE}`)
+  // Never cached, so a new build always shows its own page.
+  return c.html(html, 200, { "Cache-Control": "no-store" })
+})
 
-app.get("/viewer", requireUser, (c) =>
-  c.html(
-    viewerHtml({
-      compression: env.VNC_COMPRESSION,
-      resolution: currentResolution(),
-      qualityFor: QUALITY_FOR,
-    }),
-  ),
-)
+app.get("/kasm/*", requireUser, (c) => serveFile(env.KASM_WWW, c.req.path.slice("/kasm/".length)))
 
-app.post("/viewer/resolution", requireUser, async (c) => {
-  const body = (await c.req.json().catch(() => null)) as { height?: unknown } | null
+/**
+ * Changes on every start. A viewer page left open from an older build reconnects on its own after
+ * a restart and would keep running old keyboard code; it is refused until the page is reloaded.
+ */
+const VIEWER_BUILD = Date.now().toString(36)
+
+/** Settings for the KasmVNC client, passed in the URL hash where it reads them. */
+function kasmViewerUrl(viewOnly: boolean): string {
+  const settings: Record<string, string | number | boolean> = {
+    autoconnect: true,
+    path: `kasm/websockify?b=${VIEWER_BUILD}`,
+    resize: "scale",
+    enable_ime: false,
+    view_only: viewOnly,
+    // Kasm's own quality preset (Low 1 .. Lossless 5).
+    video_quality: QUALITIES[currentQuality()].level,
+    compression: env.VNC_COMPRESSION,
+    idle_disconnect: 0,
+    reconnect: true,
+    reconnect_delay: 1000,
+    clipboard_up: false,
+    clipboard_down: false,
+    clipboard_seamless: false,
+    prefer_local_cursor: true,
+    toggle_control_panel: false,
+  }
+  const hash = Object.entries(settings)
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+    .join("&")
+  // A new URL per build, so copies cached by older builds are never reused.
+  return `/kasm/vnc.html?v=${VIEWER_BUILD}#${hash}`
+}
+
+app.get("/viewer", requireUser, (c) => {
+  c.header("Cache-Control", "no-store")
+  return c.redirect(kasmViewerUrl(c.req.query("view_only") === "true"))
+})
+
+app.post("/viewer/quality", requireUser, async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { quality?: unknown } | null
   try {
-    return c.json({ height: await setResolution(Number(body?.height)) })
+    return c.json({ quality: setQuality(String(body?.quality)) })
   } catch (e) {
     return c.json({ error: message(e) }, 400)
   }
 })
 
 // ---- browser ----
-
-/** Viewer panel: insert text at the remote focus. VNC clipboard is Latin-1 only, this is UTF-8. */
-/**
- * Inserts text at the remote focus (the input modal and the MCP-free text box use it). UTF-8
- * safe, unlike the VNC clipboard. `replace` swaps the field's value, `enter` presses Enter after.
- */
-app.post("/browser/insert-text", requireUser, async (c) => {
-  const body = (await c.req.json().catch(() => null)) as {
-    text?: unknown
-    replace?: unknown
-    enter?: unknown
-  } | null
-  const text = typeof body?.text === "string" ? body.text : ""
-  const replace = body?.replace === true
-  if ((!text && !replace) || text.length > 20_000)
-    return c.json({ error: "text is required (max 20000 chars)" }, 400)
-  try {
-    const { page } = requireActive()
-    await insertAtFocus(page, text, { replace })
-    if (body?.enter === true) await page.keyboard.press("Enter")
-    return c.json({ ok: true, value: await focusedValue(page) })
-  } catch (e) {
-    return c.json({ error: message(e) }, 409)
-  }
-})
 
 app.get("/", requireUser, async (c) => {
   const [profiles, open] = await Promise.all([listProfiles(), openProfileRecord()])
@@ -185,8 +205,7 @@ app.get("/", requireUser, async (c) => {
       url={current()?.page.url() ?? null}
       running={runningRunId()}
       screen={{ width: env.SCREEN_WIDTH, height: env.SCREEN_HEIGHT }}
-      resolution={currentResolution()}
-      resolutions={available()}
+      quality={currentQuality()}
     />,
   )
 })
@@ -486,6 +505,217 @@ app.get("/runs/:id/stream", requireUser, (c) =>
   }),
 )
 
+// ---- docs (markdown notes) ----
+
+app.get("/docs", requireUser, async (c) => {
+  const q = c.req.query("q")?.trim() ?? ""
+  const tag = c.req.query("tag")?.trim() ?? ""
+  const [docs, tags] = await Promise.all([listDocs({ q, tag }), allTags()])
+  return c.html(<DocsPage user={c.get("user")} docs={docs} tags={tags} q={q} tag={tag} />)
+})
+
+app.post("/docs", requireUser, async (c) => {
+  const form = await c.req.formData()
+  const title = formText(form, "title")
+  const body = String(form.get("body") ?? "")
+  try {
+    if (await findDoc(title)) throw new Error(`"${title}" 문서가 이미 있어요`)
+    const doc = await saveDoc({ title, body })
+    return c.redirect(docHref(doc.title))
+  } catch (e) {
+    return c.html(
+      <DocEditPage
+        user={c.get("user")}
+        doc={{ title, body }}
+        preview={renderMarkdown(body)}
+        error={message(e)}
+      />,
+      400,
+    )
+  }
+})
+
+app.post("/docs/preview", requireUser, async (c) => {
+  const form = await c.req.formData()
+  return c.html(renderMarkdown(String(form.get("body") ?? "")))
+})
+
+/** [[Title]] links land here; a missing note opens the editor so it can be created. */
+app.get("/docs/t/:title", requireUser, async (c) => {
+  const title = c.req.param("title")
+  const doc = await findDoc(title)
+  if (!doc) return c.html(<DocEditPage user={c.get("user")} doc={{ title, body: "" }} preview="" />)
+  return c.html(
+    <DocPage
+      user={c.get("user")}
+      doc={doc}
+      html={renderMarkdown(doc.body)}
+      backlinks={await backlinks(doc.title)}
+    />,
+  )
+})
+
+app.get("/docs/:id/edit", requireUser, async (c) => {
+  const doc = await findDoc(c.req.param("id"))
+  if (!doc) return c.redirect("/docs")
+  return c.html(<DocEditPage user={c.get("user")} doc={doc} preview={renderMarkdown(doc.body)} />)
+})
+
+app.post("/docs/:id", requireUser, async (c) => {
+  const id = c.req.param("id")
+  const form = await c.req.formData()
+  const title = formText(form, "title")
+  const body = String(form.get("body") ?? "")
+  try {
+    const other = await findDoc(title)
+    if (other && other.id !== id) throw new Error(`"${title}" 문서가 이미 있어요`)
+    const doc = await saveDoc({ ref: id, title, body })
+    return c.redirect(docHref(doc.title))
+  } catch (e) {
+    return c.html(
+      <DocEditPage
+        user={c.get("user")}
+        doc={{ id, title, body }}
+        preview={renderMarkdown(body)}
+        error={message(e)}
+      />,
+      400,
+    )
+  }
+})
+
+app.post("/docs/:id/delete", requireUser, async (c) => {
+  await deleteDoc(c.req.param("id"))
+  return c.redirect("/docs")
+})
+
+// ---- data (crawl items across jobs) ----
+
+app.get("/data", requireUser, async (c) => {
+  const jobs = await listJobs()
+  const counts = await Promise.all(
+    jobs.map(async (j) => ({
+      id: j.id,
+      name: j.name,
+      total: (await listItems(j.id, { limit: 1 })).total,
+    })),
+  )
+  const selected = counts.find((j) => j.id === c.req.query("job")) ?? null
+  const items = selected ? (await listItems(selected.id, { limit: 200 })).items : []
+  return c.html(
+    <DataPage
+      user={c.get("user")}
+      jobs={counts}
+      selected={selected}
+      items={items}
+      columns={columnsOf(items.map((i) => i.data ?? {}))}
+    />,
+  )
+})
+
+// ---- images ----
+
+async function imagesPage(c: Context<App>, error?: string) {
+  return c.html(
+    <ImagesPage
+      user={c.get("user")}
+      images={await listImages({ limit: 200 })}
+      browserOpen={Boolean(current())}
+      error={error}
+    />,
+    error ? 400 : 200,
+  )
+}
+
+app.get("/images", requireUser, (c) => imagesPage(c))
+
+app.post("/images/capture", requireUser, async (c) => {
+  const form = await c.req.formData()
+  try {
+    const browser = current()
+    if (!browser) throw new Error("열린 브라우저가 없어요")
+    await captureImage(browser.page, {
+      title: formText(form, "title") || undefined,
+      source: "capture",
+      fullPage: form.get("full") === "1",
+    })
+    return c.redirect("/images")
+  } catch (e) {
+    return imagesPage(c, message(e))
+  }
+})
+
+app.post("/images/upload", requireUser, async (c) => {
+  const form = await c.req.formData()
+  try {
+    const file = form.get("file")
+    if (!(file instanceof File) || file.size === 0) throw new Error("파일을 골라 주세요")
+    if (file.size > 20 * 1024 * 1024) throw new Error("20MB까지 올릴 수 있어요")
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type))
+      throw new Error("PNG, JPEG, WebP, GIF만 올릴 수 있어요")
+    await saveImage({
+      data: new Uint8Array(await file.arrayBuffer()),
+      filename: file.name || "upload",
+      mime: file.type,
+      title: formText(form, "title") || file.name.replace(/\.[^.]+$/, ""),
+      source: "upload",
+    })
+    return c.redirect("/images")
+  } catch (e) {
+    return imagesPage(c, message(e))
+  }
+})
+
+async function sendImage(ref: string): Promise<Response> {
+  const image = await findImage(ref)
+  if (!image) return new Response("Not found", { status: 404 })
+  const res = await imageFile(image)
+  return new Response(res.body, {
+    status: res.status,
+    headers: {
+      "content-type": res.headers.get("content-type") ?? "application/octet-stream",
+      "cache-control": "private, max-age=300",
+    },
+  })
+}
+
+app.get("/images/:id/file", requireUser, (c) => sendImage(c.req.param("id")))
+/** ![[title]] embeds in notes: by id or the newest image with that title. */
+app.get("/images/t/:ref", requireUser, (c) => sendImage(c.req.param("ref")))
+
+app.post("/images/:id/delete", requireUser, async (c) => {
+  await deleteImage(c.req.param("id"))
+  return c.redirect("/images")
+})
+
+// ---- MCP setup ----
+
+function publicOrigin(c: Context<App>): string {
+  const url = new URL(c.req.url)
+  const proto =
+    c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.slice(0, -1)
+  const host = c.req.header("x-forwarded-host") || c.req.header("host") || url.host
+  return `${proto}://${host}`
+}
+
+app.get("/mcp-setup", requireUser, (c) =>
+  c.html(
+    <McpPage
+      user={c.get("user")}
+      url={`${publicOrigin(c)}/mcp`}
+      hasToken={Boolean(env.MCP_TOKEN)}
+      emails={[...allowedEmails]}
+    />,
+  ),
+)
+
+/** The token is only handed out on request (POST, logged-in user), never rendered into the page. */
+app.post("/mcp-setup/token", requireUser, (c) => {
+  if (!env.MCP_TOKEN) return c.json({ error: "MCP_TOKEN is not set" }, 404)
+  c.header("Cache-Control", "no-store")
+  return c.json({ token: env.MCP_TOKEN })
+})
+
 app.onError((e, c) => {
   console.error(`[app] ${c.req.method} ${c.req.path}`, e)
   return c.text(message(e), 500)
@@ -516,7 +746,7 @@ app.on(["GET", "DELETE"], "/mcp", (c) => c.body(null, 405, { Allow: "POST" }))
 
 // ---- start ----
 
-/** noVNC connects to /novnc/websockify; pipe it to the local websockify after checking the session. */
+/** The viewer connects to /kasm/websockify; pipe it to KasmVNC after checking the session. */
 async function proxyVnc(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
   const token = sessionFromCookieHeader(req.headers.cookie)
   if (!token || !(await verifyToken(token))) {
@@ -547,10 +777,11 @@ async function main(): Promise<void> {
     console.log(`[app] listening on :${info.port}`)
   })
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    // noVNC resolves its `path` relative to /novnc/vnc.html, so accept both locations.
-    const target = req.url?.split("?")[0]
-    if (target === "/websockify" || target === "/novnc/websockify") void proxyVnc(req, socket, head)
-    else socket.destroy()
+    const url = new URL(req.url ?? "/", "http://local")
+    if (url.pathname !== "/kasm/websockify") socket.destroy()
+    else if (url.searchParams.get("b") !== VIEWER_BUILD)
+      socket.end("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
+    else void proxyVnc(req, socket, head)
   })
   const shutdown = () => {
     void closeActive().finally(() => process.exit(0))

@@ -5,7 +5,7 @@ import { z } from "zod"
 import { locate, pageSummary, settle, snapshot } from "./browser/actions.js"
 import { currentChallenge, waitForHuman } from "./browser/challenge.js"
 import { profileCookies, summarize } from "./browser/cookies.js"
-import { available, currentResolution, setResolution } from "./browser/vnc.js"
+import { currentQuality, QUALITIES, setQuality } from "./browser/vnc.js"
 import {
   closeActive,
   current,
@@ -14,6 +14,17 @@ import {
   selectTab,
   tabs,
 } from "./browser/manager.js"
+import {
+  allTags,
+  appendDoc,
+  backlinks,
+  deleteDoc,
+  getDoc,
+  listDocs,
+  saveDoc,
+  wikiTargets,
+} from "./docs.js"
+import { captureImage, deleteImage, findImage, imageFile, listImages } from "./images.js"
 import { allItems, listItems, toCsv } from "./jobs/crawl.js"
 import { runningRunId, startRun } from "./jobs/runner.js"
 import { nextRun } from "./jobs/scheduler.js"
@@ -87,7 +98,7 @@ export function buildMcpServer(): McpServer {
         "When refs are not enough (canvas, maps, drag), take browser_screenshot and use mouse_* with its coordinates.",
         "Automate: job_create with steps (extract saves rows), job_update to set a cron schedule and enabled,",
         "job_run to run now, run_get for logs, crawl_items / crawl_csv for the collected data.",
-        "Only one profile and one job run at a time. A person may be watching through noVNC.",
+        "Only one profile and one job run at a time. A person may be watching through the remote view (KasmVNC).",
       ].join(" "),
     },
   )
@@ -277,25 +288,21 @@ export function buildMcpServer(): McpServer {
   )
 
   server.registerTool(
-    "viewer_resolution",
+    "viewer_quality",
     {
       description:
-        "Get or set the resolution people see in noVNC (the browser itself and screenshots stay full size).",
+        "Get or set the stream quality people see in the remote view (KasmVNC presets; applies when the view reloads). The browser itself and screenshots are not affected.",
       inputSchema: {
-        height: z
-          .number()
-          .int()
+        quality: z
+          .enum(["low", "medium", "high", "extreme", "lossless"])
           .optional()
-          .describe("1080, 720, 480 or 360. Omit to read the current one"),
+          .describe("Omit to read the current one"),
       },
     },
-    ({ height }) =>
+    ({ quality }) =>
       guarded(async () => {
-        if (height !== undefined) await setResolution(height)
-        return json({
-          resolution: `${currentResolution()}p`,
-          available: available().map((h) => `${h}p`),
-        })
+        if (quality !== undefined) setQuality(quality, "mcp")
+        return json({ quality: currentQuality(), available: Object.keys(QUALITIES) })
       }),
   )
 
@@ -468,7 +475,7 @@ export function buildMcpServer(): McpServer {
     "profile_create",
     {
       description:
-        "Create a profile. Log in to sites inside it once (noVNC or browser_* tools) and it stays logged in.",
+        "Create a profile. Log in to sites inside it once (remote view or browser_* tools) and it stays logged in.",
       inputSchema: { name: z.string().min(1).max(100), ...profileFields },
     },
     (input) => guarded(async () => json(await createProfile(input))),
@@ -750,6 +757,181 @@ export function buildMcpServer(): McpServer {
             ? `${note}${csv.slice(0, MAX_CSV_CHARS)}\n... truncated, use the download URL for the full file`
             : `${note}${csv}`,
         )
+      }),
+  )
+
+  // ---------- docs (markdown notes, same as the dashboard's 문서 page) ----------
+
+  server.registerTool(
+    "docs_list",
+    {
+      description:
+        "List markdown notes (title, tags, updated). Notes link with [[Title]], embed images with ![[image title]] and use #tags.",
+      inputSchema: {
+        query: z.string().optional().describe("Search in titles and bodies"),
+        tag: z.string().optional().describe("Only notes with this #tag (without #)"),
+      },
+    },
+    ({ query, tag }) =>
+      guarded(async () => {
+        const docs = await listDocs({ q: query, tag })
+        return json({
+          docs: docs.map((d) => ({ title: d.title, tags: d.tags ?? [], updated: d.updated })),
+          tags: await allTags(),
+        })
+      }),
+  )
+
+  server.registerTool(
+    "doc_read",
+    {
+      description:
+        "Read a note's markdown, with the notes it links to and the notes linking to it.",
+      inputSchema: { doc: z.string().describe("Title or id") },
+    },
+    ({ doc }) =>
+      guarded(async () => {
+        const d = await getDoc(doc)
+        return json({
+          title: d.title,
+          tags: d.tags ?? [],
+          updated: d.updated,
+          links: wikiTargets(d.body),
+          backlinks: (await backlinks(d.title)).map((b) => b.title),
+          body: d.body,
+        })
+      }),
+  )
+
+  server.registerTool(
+    "doc_write",
+    {
+      description:
+        "Create a note, or replace the whole body of an existing one (matched by title, or by `doc` to rename). Tags are taken from #tags in the body.",
+      inputSchema: {
+        title: z.string().min(1).max(200),
+        body: z.string().max(1_000_000),
+        doc: z.string().optional().describe("Existing note (title or id) to overwrite or rename"),
+      },
+    },
+    ({ title, body, doc }) =>
+      guarded(async () => {
+        const saved = await saveDoc({ ref: doc, title, body })
+        return text(
+          `saved "${saved.title}" (${saved.id}): /docs/t/${encodeURIComponent(saved.title)}`,
+        )
+      }),
+  )
+
+  server.registerTool(
+    "doc_append",
+    {
+      description: "Append markdown to the end of a note, creating it when it does not exist.",
+      inputSchema: { doc: z.string().describe("Title or id"), text: z.string().max(200_000) },
+    },
+    ({ doc, text: more }) =>
+      guarded(async () => {
+        const saved = await appendDoc(doc, more)
+        return text(`appended to "${saved.title}" (${saved.id})`)
+      }),
+  )
+
+  server.registerTool(
+    "doc_delete",
+    { description: "Delete a note.", inputSchema: { doc: z.string().describe("Title or id") } },
+    ({ doc }) =>
+      guarded(async () => {
+        await deleteDoc(doc)
+        return text(`deleted ${doc}`)
+      }),
+  )
+
+  // ---------- images (same as the dashboard's 이미지 page) ----------
+
+  server.registerTool(
+    "image_capture",
+    {
+      description:
+        "Screenshot the open page and store it as an image (embeddable in notes as ![[title]]).",
+      inputSchema: {
+        title: z.string().max(200).optional().describe("Defaults to the page title"),
+        full_page: z.boolean().optional(),
+      },
+    },
+    ({ title, full_page }) =>
+      guarded(async () => {
+        const { page } = requireActive()
+        const image = await captureImage(page, {
+          title,
+          source: "mcp",
+          fullPage: full_page ?? false,
+        })
+        return json({
+          id: image.id,
+          title: image.title,
+          page_url: image.page_url,
+          embed: `![[${image.title}]]`,
+        })
+      }),
+  )
+
+  server.registerTool(
+    "images_list",
+    {
+      description: "List stored images, newest first.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(500).optional(),
+        job: z.string().optional().describe("Only screenshots saved by this job id"),
+      },
+    },
+    ({ limit, job }) =>
+      guarded(async () => {
+        const images = await listImages({ limit: limit ?? 50, job })
+        return json(
+          images.map((i) => ({
+            id: i.id,
+            title: i.title,
+            source: i.source,
+            page_url: i.page_url || undefined,
+            job: i.job || undefined,
+            created: i.created,
+          })),
+        )
+      }),
+  )
+
+  server.registerTool(
+    "image_get",
+    {
+      description: "Return a stored image (by id or title) so it can be looked at.",
+      inputSchema: { image: z.string().describe("Id or title") },
+    },
+    ({ image }) =>
+      guarded(async () => {
+        const record = await findImage(image)
+        if (!record) throw new Error(`Image not found: ${image}`)
+        const res = await imageFile(record)
+        if (!res.ok) throw new Error(`Could not read the image (${res.status})`)
+        const data = Buffer.from(await res.arrayBuffer()).toString("base64")
+        return {
+          content: [
+            { type: "text", text: `${record.title} (${record.id}) ${record.page_url}`.trim() },
+            { type: "image", data, mimeType: res.headers.get("content-type") ?? "image/png" },
+          ],
+        }
+      }),
+  )
+
+  server.registerTool(
+    "image_delete",
+    {
+      description: "Delete a stored image.",
+      inputSchema: { image: z.string().describe("Id or title") },
+    },
+    ({ image }) =>
+      guarded(async () => {
+        await deleteImage(image)
+        return text(`deleted ${image}`)
       }),
   )
 

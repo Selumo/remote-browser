@@ -12,7 +12,7 @@ import {
 import { env } from "../env.js"
 
 /**
- * One headful browser on the shared Xvfb display, so noVNC shows exactly what the AI and the jobs
+ * One headful browser on the shared KasmVNC display, so the remote view shows exactly what the AI and the jobs
  * are driving. Each profile has its own user data directory under DATA_DIR/profiles, which keeps
  * cookies and storage (logins) across restarts. Data is per engine, so a profile switched to
  * another engine starts logged out on that engine.

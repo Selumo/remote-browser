@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx"
+import { QUALITIES, type Quality } from "../browser/vnc.js"
 import type { CookieStatus, DomainSummary } from "../browser/cookies.js"
 import { STEP_HELP } from "../jobs/steps.js"
 import type { CrawlItem, Job, JobRun, Profile } from "../pb.js"
@@ -97,22 +98,15 @@ export const BrowserStatus: FC<{
 )
 
 /**
- * Viewer controls on the status bar: stream resolution (server side, x11vnc), view only (handed
- * to the viewer frame through window.viewer), the input modal switch, fullscreen and close.
+ * Viewer controls on the status bar: stream preset and view only (applied by reloading the
+ * KasmVNC client with new settings), the input modal switch, fullscreen and close.
  */
-export const BrowserControls: FC<{ resolution: number; resolutions: readonly number[] }> = ({
-  resolution,
-  resolutions,
-}) => (
+export const BrowserControls: FC<{ quality: Quality }> = ({ quality }) => (
   <span class="row controls">
-    <select
-      id="vnc-res"
-      title="보이는 화면의 해상도 (브라우저는 원본 그대로)"
-      onchange="rbSetResolution(this)"
-    >
-      {resolutions.map((h, i) => (
-        <option value={String(h)} selected={h === resolution}>
-          {h}p{i === 0 ? " 원본" : ""}
+    <select id="vnc-quality" title="원격 화면 화질 (KasmVNC 프리셋)" onchange="rbSetQuality(this)">
+      {Object.entries(QUALITIES).map(([key, q]) => (
+        <option value={key} selected={key === quality}>
+          화질 {q.label}
         </option>
       ))}
     </select>
@@ -121,7 +115,7 @@ export const BrowserControls: FC<{ resolution: number; resolutions: readonly num
     </label>
     <button
       type="button"
-      onclick="document.querySelector('iframe.vnc')?.requestFullscreen()"
+      onclick="document.querySelector('.vnc-frame')?.requestFullscreen()"
       title="Esc로 나가기"
     >
       전체화면
@@ -136,62 +130,24 @@ export const BrowserControls: FC<{ resolution: number; resolutions: readonly num
  * Always-visible text bar under the remote screen: click a field in the remote page, type here
  * with the local IME (Korean works), Enter inserts it exactly at the remote focus.
  */
-export const TypeBar: FC = () => (
-  <form class="typebar row" onsubmit="event.preventDefault(); rbSendBar()">
-    <input
-      id="tb-text"
-      autocomplete="off"
-      placeholder="원격 화면의 입력칸을 클릭한 뒤 여기에 입력하고 Enter (한글 가능)"
-    />
-    <label class="row" style="margin:0" title="검색창처럼 넣고 바로 실행할 때">
-      <input type="checkbox" id="tb-enter" onchange="rbStore.set('barEnter', this.checked)" />{" "}
-      Enter도 누르기
-    </label>
-    <label class="row" style="margin:0">
-      <input type="checkbox" id="tb-replace" /> 기존 값 바꾸기
-    </label>
-    <button type="submit" class="primary">
-      넣기
-    </button>
-    <span id="tb-msg" class="muted" />
-  </form>
-)
-
 const controlsScript = `
-const rbFrame = () => document.querySelector("iframe.vnc")?.contentWindow?.viewer
-const rbStore = {
-  get(k, d) { try { const v = localStorage.getItem("rb." + k); return v === null ? d : v } catch { return d } },
-  set(k, v) { try { localStorage.setItem("rb." + k, String(v)) } catch {} },
+const rbViewOnly = () => { try { return localStorage.getItem("viewer.viewOnly") === "true" } catch { return false } }
+// The KasmVNC client takes its settings when it loads, so it is reloaded to apply new ones.
+function rbReloadViewer() {
+  const f = document.querySelector("iframe.vnc")
+  if (f) f.src = "/viewer?view_only=" + rbViewOnly() + "&t=" + Date.now()
 }
-async function rbSetResolution(sel) {
+async function rbSetQuality(sel) {
   const prev = sel.dataset.prev || sel.value
-  const res = await fetch("/viewer/resolution", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ height: Number(sel.value) }) }).catch(() => null)
-  if (res && res.ok) { sel.dataset.prev = sel.value; rbFrame()?.setResolution(Number(sel.value)) }
-  else { sel.value = prev; alert("해상도를 바꾸지 못했어요") }
+  const res = await fetch("/viewer/quality", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ quality: sel.value }) }).catch(() => null)
+  if (res && res.ok) { sel.dataset.prev = sel.value; rbReloadViewer() }
+  else { sel.value = prev; alert("화질을 바꾸지 못했어요") }
 }
-function rbSetViewOnly(on) { try { localStorage.setItem("viewer.viewOnly", String(on)) } catch {} ; rbFrame()?.setViewOnly(on) }
-// The form submits after the IME commits the composition, so the last Korean syllable is sent.
-async function rbSendBar() {
-  const input = document.getElementById("tb-text")
-  const text = input.value
-  const replace = document.getElementById("tb-replace").checked
-  const enter = document.getElementById("tb-enter").checked
-  const msg = document.getElementById("tb-msg")
-  if (!text && !replace && !enter) return
-  msg.textContent = "넣는 중…"
-  const res = await fetch("/browser/insert-text", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, replace, enter }) }).catch(() => null)
-  const data = res ? await res.json().catch(() => ({})) : {}
-  if (res && res.ok) {
-    input.value = ""
-    document.getElementById("tb-replace").checked = false
-    msg.textContent = data.value === null ? "넣었어요 (원격에 선택된 입력칸이 없으면 안 보일 수 있어요)" : "넣었어요"
-  } else msg.textContent = "실패: " + (data.error || "연결 오류")
-  setTimeout(() => { if (msg.textContent.startsWith("넣었")) msg.textContent = "" }, 2500)
-}
+function rbSetViewOnly(on) { try { localStorage.setItem("viewer.viewOnly", String(on)) } catch {} ; rbReloadViewer() }
 document.addEventListener("DOMContentLoaded", () => {
-  const sel = document.getElementById("vnc-res"); if (sel) sel.dataset.prev = sel.value
-  try { document.getElementById("vnc-viewonly").checked = localStorage.getItem("viewer.viewOnly") === "true" } catch {}
-  document.getElementById("tb-enter").checked = rbStore.get("barEnter", "false") === "true"
+  const sel = document.getElementById("vnc-quality"); if (sel) sel.dataset.prev = sel.value
+  const vo = document.getElementById("vnc-viewonly")
+  if (vo) { vo.checked = rbViewOnly(); if (vo.checked) rbReloadViewer() }
 })
 `
 
@@ -264,9 +220,8 @@ export const BrowserPage: FC<{
   url: string | null
   running: string | null
   screen: { width: number; height: number }
-  resolution: number
-  resolutions: readonly number[]
-}> = ({ user, profiles, openProfile, url, running, screen, resolution, resolutions }) => (
+  quality: Quality
+}> = ({ user, profiles, openProfile, url, running, screen, quality }) => (
   <Layout title="브라우저 · Remote Browser" user={user} section="browser" fill>
     <div class="grid">
       <section class="box">
@@ -303,18 +258,19 @@ export const BrowserPage: FC<{
         <h2>원격 브라우저</h2>
         <div class="row toolbar">
           <BrowserStatus profile={openProfile} url={url} running={running} />
-          <BrowserControls resolution={resolution} resolutions={resolutions} />
+          <BrowserControls quality={quality} />
         </div>
         <script dangerouslySetInnerHTML={{ __html: controlsScript }} />
         <div class="vnc-wrap" style={`--sw:${screen.width};--sh:${screen.height}`}>
-          <iframe
-            class="vnc"
-            src="/viewer"
-            title="원격 브라우저 화면"
-            allow="fullscreen; clipboard-read; clipboard-write"
-          />
+          <div class="vnc-frame">
+            <iframe
+              class="vnc"
+              src="/viewer"
+              title="원격 브라우저 화면"
+              allow="fullscreen; clipboard-read; clipboard-write"
+            />
+          </div>
         </div>
-        <TypeBar />
       </section>
     </div>
   </Layout>

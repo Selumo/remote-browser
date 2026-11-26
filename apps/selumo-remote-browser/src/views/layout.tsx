@@ -37,9 +37,11 @@ button.primary:hover { background: #fff; color: #000; }
 /* The viewer frame keeps the remote screen's aspect ratio (--sw/--sh) at the largest size that
    fits its box, so the remote screen never gets black side bars. */
 .vnc-wrap { flex: 1; min-height: 0; container-type: size; display: flex; justify-content: center; align-items: flex-start; }
-.vnc { display: block; border: 0; outline: 1px solid #000; background: #000;
+.vnc-frame { position: relative; outline: 1px solid #000; background: #000;
   width: min(100cqw, calc(100cqh * var(--sw) / var(--sh)));
   height: min(100cqh, calc(100cqw * var(--sh) / var(--sw))); }
+.vnc-frame:fullscreen { width: 100vw; height: 100vh; outline: 0; }
+.vnc { display: block; border: 0; width: 100%; height: 100%; background: #000; }
 /* Full-height pages (the remote browser): the window never scrolls, panels fit the viewport. */
 body.fill { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 body.fill main { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
@@ -55,19 +57,37 @@ body.fill .grid > .box.screen { display: flex; flex-direction: column; overflow:
   body.fill { height: auto; overflow: auto; }
   body.fill .grid { height: auto; }
   body.fill .vnc-wrap { flex: none; container-type: inline-size; }
-  body.fill .vnc { width: 100%; height: auto; aspect-ratio: var(--sw) / var(--sh); }
+  body.fill .vnc-frame { width: 100%; height: auto; aspect-ratio: var(--sw) / var(--sh); }
 }
 .log { margin: 0; padding: 0; list-style: none; max-height: 380px; overflow: auto; }
 .log li { padding: 1px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log li.error, .error { font-weight: bold; text-decoration: underline; }
 form p { margin: 10px 0 0; }
-.typebar { margin-top: 8px; flex: none; flex-wrap: nowrap; }
-.typebar #tb-text { flex: 1; min-width: 0; font-size: 15px; }
-.typebar label, .typebar #tb-msg { white-space: nowrap; }
 .cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; }
 details.dom { border: 1px solid #000; margin-top: -1px; }
 details.dom > summary { display: grid; grid-template-columns: minmax(0, 2fr) 70px 70px 50px 60px 150px;
   gap: 8px; padding: 4px 8px; cursor: pointer; list-style: none; }
+tr.on td { background: #000; color: #fff; }
+tr.on td a { color: #fff; }
+h3 { font-size: 13px; margin: 16px 0 6px; }
+/* Markdown notes */
+.md { overflow-wrap: anywhere; }
+.md img { max-width: 100%; border: 1px solid #000; }
+.md pre { border: 1px solid #000; padding: 8px; overflow: auto; }
+.md code { background: #eee; padding: 0 3px; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { margin: 0; padding-left: 10px; border-left: 3px solid #000; }
+.md table { width: auto; }
+.editor textarea { min-height: 60vh; }
+/* Image grid */
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.gallery figure { margin: 0; border: 1px solid #000; display: flex; flex-direction: column; }
+.gallery img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-bottom: 1px solid #000; }
+.gallery figcaption { padding: 6px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.gallery .url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Copyable values */
+.copy { display: flex; gap: 8px; align-items: flex-start; }
+.copy code, .copy pre { flex: 1; min-width: 0; margin: 0; padding: 6px 8px; border: 1px solid #000; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 details.dom > summary::-webkit-details-marker { display: none; }
 details.dom[open] > summary, details.dom > summary:hover { background: #000; color: #fff; }
 details.dom > summary.head { background: #000; color: #fff; cursor: default; }
@@ -75,7 +95,7 @@ details.dom table { border-top: 1px solid #000; }
 details.dom table td, details.dom table th { border-left: 0; border-right: 0; }
 `
 
-export type Section = "browser" | "jobs" | "profiles" | null
+export type Section = "browser" | "jobs" | "profiles" | "docs" | "data" | "images" | "mcp" | null
 
 export const Layout: FC<{
   title: string
@@ -107,6 +127,18 @@ export const Layout: FC<{
             </a>
             <a href="/profiles" class={section === "profiles" ? "on" : ""}>
               프로필
+            </a>
+            <a href="/docs" class={section === "docs" ? "on" : ""}>
+              문서
+            </a>
+            <a href="/data" class={section === "data" ? "on" : ""}>
+              데이터
+            </a>
+            <a href="/images" class={section === "images" ? "on" : ""}>
+              이미지
+            </a>
+            <a href="/mcp-setup" class={section === "mcp" ? "on" : ""}>
+              MCP
             </a>
           </nav>
           <span class="spacer" />

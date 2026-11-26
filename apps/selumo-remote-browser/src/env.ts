@@ -9,12 +9,12 @@ const Env = z.object({
   ADMIN_PASSWORD: z.string().min(8).optional(),
   DATA_DIR: z.string().default("/data"),
   DISPLAY: z.string().default(":99"),
-  NOVNC_DIR: z.string().default("/opt/novnc"),
+  KASM_WWW: z.string().default("/usr/share/kasmvnc/www"),
   VNC_WS_PORT: z.coerce.number().int().default(6080),
   /** Size of the virtual screen and the Chromium window. Keep in step with SCREEN in the entrypoint. */
   SCREEN_WIDTH: z.coerce.number().int().min(320).default(1920),
   SCREEN_HEIGHT: z.coerce.number().int().min(320).default(1080),
-  /** noVNC zlib compression 0 to 9. JPEG quality follows the chosen stream resolution. */
+  /** Remote view zlib compression 0 to 9. JPEG quality follows the chosen stream preset. */
   VNC_COMPRESSION: z.coerce.number().int().min(0).max(9).default(6),
   MCP_TOKEN: z
     .string()

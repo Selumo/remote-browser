@@ -3,7 +3,7 @@ import type { Page } from "playwright"
 /**
  * Bot checks (CAPTCHA, "unusual traffic", Cloudflare interstitials). They are never solved
  * automatically: the app notices them, tells the AI and the dashboard, and waits for a person
- * to clear them through noVNC.
+ * to clear them through the remote view.
  */
 export type Challenge = { kind: string; url: string; since: string }
 
@@ -92,6 +92,6 @@ export async function waitForHuman(
 export function challengeNote(c: Challenge | null): string {
   return c
     ? `\n\n⚠ BOT CHECK: ${c.kind} at ${c.url}. Do not try to solve it. Ask the person to clear it in the ` +
-        `dashboard's remote screen (noVNC), then call browser_wait_for_human.`
+        `dashboard's remote screen (KasmVNC), then call browser_wait_for_human.`
     : ""
 }

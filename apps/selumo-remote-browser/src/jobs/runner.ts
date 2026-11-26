@@ -1,10 +1,9 @@
 import { EventEmitter } from "node:events"
-import { mkdir } from "node:fs/promises"
-import path from "node:path"
 import type { Page } from "playwright"
 import { checkChallenge, waitForHuman } from "../browser/challenge.js"
 import { openProfile, requireActive } from "../browser/manager.js"
 import { env } from "../env.js"
+import { captureImage } from "../images.js"
 import {
   ensureSuperuser,
   pb,
@@ -129,11 +128,13 @@ async function runStep(step: Step, ctx: StepContext): Promise<string | null> {
       return text.trim()
     }
     case "screenshot": {
-      const dir = path.join(env.DATA_DIR, "screenshots")
-      await mkdir(dir, { recursive: true })
-      const file = path.join(dir, `${ctx.runId}-${ctx.index + 1}.png`)
-      await page.screenshot({ path: file })
-      return `saved ${file}`
+      const image = await captureImage(page, {
+        title: `${ctx.job.name} #${ctx.index + 1}`,
+        source: "job",
+        job: ctx.job.id,
+        run: ctx.runId,
+      })
+      return `saved image ${image.id}`
     }
     case "scroll":
       if (step.to === "bottom")
