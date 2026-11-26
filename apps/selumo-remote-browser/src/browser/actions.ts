@@ -30,3 +30,46 @@ export async function settle(page: Page): Promise<void> {
   await page.waitForTimeout(400)
   await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => undefined)
 }
+
+/** Value of the focused editable element in any frame, for checking what an insertion did. */
+export async function focusedValue(page: Page): Promise<string | null> {
+  for (const frame of page.frames()) {
+    const v = await frame
+      .evaluate(() => {
+        if (!document.hasFocus()) return null
+        const el = document.activeElement as HTMLInputElement | HTMLElement | null
+        if (!el) return null
+        if ("value" in el && typeof el.value === "string") return el.value
+        return el.isContentEditable ? (el.textContent ?? "") : null
+      })
+      .catch(() => null)
+    if (v !== null) return v
+  }
+  return null
+}
+
+/**
+ * Inserts text at the focused element the way a person's typing would: execCommand("insertText")
+ * fires beforeinput/input with inputType insertText, which React and other frameworks handle like
+ * keyboard input. Falls back to CDP insertText when the focus is not an editable element.
+ */
+export async function insertAtFocus(page: Page, text: string): Promise<void> {
+  for (const frame of page.frames()) {
+    const done = await frame
+      .evaluate((t) => {
+        if (!document.hasFocus()) return false
+        const el = document.activeElement as HTMLElement | null
+        if (!el) return false
+        const editable =
+          el.isContentEditable ||
+          el instanceof HTMLTextAreaElement ||
+          (el instanceof HTMLInputElement &&
+            /^(text|search|email|url|tel|password|number|)$/.test(el.type))
+        if (!editable) return false
+        return document.execCommand("insertText", false, t)
+      }, text)
+      .catch(() => false)
+    if (done) return
+  }
+  await page.keyboard.insertText(text)
+}

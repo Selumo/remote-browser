@@ -19,6 +19,7 @@ import {
 } from "./auth.js"
 import { profileCookies, summarize } from "./browser/cookies.js"
 import { available, currentResolution, QUALITY_FOR, setResolution } from "./browser/vnc.js"
+import { focusedValue, insertAtFocus } from "./browser/actions.js"
 import { closeActive, current, openProfile, requireActive } from "./browser/manager.js"
 import { env } from "./env.js"
 import { allItems, columnsOf, listItems, toCsv } from "./jobs/crawl.js"
@@ -154,8 +155,12 @@ app.post("/browser/insert-text", requireUser, async (c) => {
   if (!text || text.length > 20_000)
     return c.json({ error: "text is required (max 20000 chars)" }, 400)
   try {
-    await requireActive().page.keyboard.insertText(text)
-    return c.json({ ok: true })
+    const { page } = requireActive()
+    const mode = (body as { mode?: unknown } | null)?.mode
+    if (mode === "cdp") await page.keyboard.insertText(text)
+    else if (mode === "type") await page.keyboard.type(text)
+    else await insertAtFocus(page, text)
+    return c.json({ ok: true, value: await focusedValue(page) })
   } catch (e) {
     return c.json({ error: message(e) }, 409)
   }

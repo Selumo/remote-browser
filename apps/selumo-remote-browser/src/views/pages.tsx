@@ -126,7 +126,7 @@ export const BrowserControls: FC<{ resolution: number; resolutions: readonly num
         id="vnc-text"
         placeholder="원격 화면의 입력칸을 클릭한 뒤 입력. 한글 가능"
         style="flex:1"
-        onkeydown="if(event.key==='Enter'){rbSendText()}"
+        onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229){event.preventDefault(); rbSendText()}"
       />
       <button type="button" class="primary" onclick="rbSendText()">
         넣기
