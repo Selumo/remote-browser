@@ -131,7 +131,6 @@ app.get("/viewer", requireUser, (c) =>
     viewerHtml({
       compression: env.VNC_COMPRESSION,
       resolution: currentResolution(),
-      resolutions: available(),
       qualityFor: QUALITY_FOR,
     }),
   ),
@@ -172,6 +171,8 @@ app.get("/", requireUser, async (c) => {
       url={current()?.page.url() ?? null}
       running={runningRunId()}
       screen={{ width: env.SCREEN_WIDTH, height: env.SCREEN_HEIGHT }}
+      resolution={currentResolution()}
+      resolutions={available()}
     />,
   )
 })

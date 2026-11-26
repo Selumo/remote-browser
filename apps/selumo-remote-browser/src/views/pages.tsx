@@ -51,42 +51,113 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
 
 // ---------- browser ----------
 
-/** Polled by htmx so the header follows what the AI and the jobs are doing. */
+/** Polled by htmx so the header follows what the AI and the jobs are doing. Text only: the
+ * controls next to it live outside the polled element so their state is not reset. */
 export const BrowserStatus: FC<{
   profile: Profile | null
   url: string | null
   running: string | null
 }> = ({ profile, url, running }) => (
-  <div id="browser-status" hx-get="/partials/status" hx-trigger="every 5s" hx-swap="outerHTML">
-    <p class="row">
-      {profile ? (
-        <>
-          <span class="tag on">OPEN</span> <strong>{profile.name}</strong>{" "}
-          <span class="muted">{url}</span>
-          <button
-            type="button"
-            onclick="document.querySelector('iframe.vnc')?.requestFullscreen()"
-            title="원격 화면을 전체화면으로 (Esc로 나가기)"
-          >
-            전체화면
-          </button>
-          <button hx-post="/browser/close" hx-target="#browser-status" hx-swap="outerHTML">
-            닫기
-          </button>
-        </>
-      ) : (
-        <span class="muted">
-          열린 프로필 없음. 왼쪽에서 프로필을 열면 아래 화면에 브라우저가 떠요.
+  <span
+    id="browser-status"
+    class="row status"
+    hx-get="/partials/status"
+    hx-trigger="every 5s"
+    hx-swap="outerHTML"
+  >
+    {profile ? (
+      <>
+        <span class="tag on">OPEN</span> <strong>{profile.name}</strong>
+        <span class="muted url" title={url ?? ""}>
+          {url}
         </span>
-      )}
-      {running ? (
-        <a class="tag on" href={`/runs/${running}`}>
-          RUNNING {running}
-        </a>
-      ) : null}
-    </p>
-  </div>
+      </>
+    ) : (
+      <span class="muted">
+        열린 프로필 없음. 왼쪽에서 프로필을 열면 아래 화면에 브라우저가 떠요.
+      </span>
+    )}
+    {running ? (
+      <a class="tag on" href={`/runs/${running}`}>
+        RUNNING {running}
+      </a>
+    ) : null}
+  </span>
 )
+
+/**
+ * Viewer controls on the status bar: stream resolution (server side, x11vnc), view only and
+ * text insertion (handed to the viewer frame through window.viewer), fullscreen and close.
+ */
+export const BrowserControls: FC<{ resolution: number; resolutions: readonly number[] }> = ({
+  resolution,
+  resolutions,
+}) => (
+  <span class="row controls" x-data="{ text: false }">
+    <select
+      id="vnc-res"
+      title="보이는 화면의 해상도 (브라우저는 원본 그대로)"
+      onchange="rbSetResolution(this)"
+    >
+      {resolutions.map((h, i) => (
+        <option value={String(h)} selected={h === resolution}>
+          {h}p{i === 0 ? " 원본" : ""}
+        </option>
+      ))}
+    </select>
+    <label class="row" style="margin:0">
+      <input type="checkbox" id="vnc-viewonly" onchange="rbSetViewOnly(this.checked)" /> 보기 전용
+    </label>
+    <button type="button" x-on:click="text = !text" x-text="text ? '텍스트 닫기' : '텍스트 보내기'">
+      텍스트 보내기
+    </button>
+    <button
+      type="button"
+      onclick="document.querySelector('iframe.vnc')?.requestFullscreen()"
+      title="Esc로 나가기"
+    >
+      전체화면
+    </button>
+    <button hx-post="/browser/close" hx-target="#browser-status" hx-swap="outerHTML">
+      닫기
+    </button>
+    <span x-show="text" class="row" style="flex-basis:100%">
+      <input
+        id="vnc-text"
+        placeholder="원격 화면의 입력칸을 클릭한 뒤 입력. 한글 가능"
+        style="flex:1"
+        onkeydown="if(event.key==='Enter'){rbSendText()}"
+      />
+      <button type="button" class="primary" onclick="rbSendText()">
+        넣기
+      </button>
+      <span id="vnc-msg" class="muted" />
+    </span>
+  </span>
+)
+
+const controlsScript = `
+const rbFrame = () => document.querySelector("iframe.vnc")?.contentWindow?.viewer
+function rbMsg(t) { const m = document.getElementById("vnc-msg"); if (m) { m.textContent = t; setTimeout(() => { if (m.textContent === t) m.textContent = "" }, 2000) } }
+async function rbSetResolution(sel) {
+  const prev = sel.dataset.prev || sel.value
+  const res = await fetch("/viewer/resolution", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ height: Number(sel.value) }) }).catch(() => null)
+  if (res && res.ok) { sel.dataset.prev = sel.value; rbFrame()?.setResolution(Number(sel.value)) }
+  else { sel.value = prev; alert("해상도를 바꾸지 못했어요") }
+}
+function rbSetViewOnly(on) { try { localStorage.setItem("viewer.viewOnly", String(on)) } catch {} ; rbFrame()?.setViewOnly(on) }
+async function rbSendText() {
+  const input = document.getElementById("vnc-text"); const text = input.value
+  if (!text) return
+  const res = await fetch("/browser/insert-text", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).catch(() => null)
+  const data = res ? await res.json().catch(() => ({})) : {}
+  if (res && res.ok) { input.value = ""; rbMsg("넣었어요") } else rbMsg("실패: " + (data.error || "연결 오류"))
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const sel = document.getElementById("vnc-res"); if (sel) sel.dataset.prev = sel.value
+  try { document.getElementById("vnc-viewonly").checked = localStorage.getItem("viewer.viewOnly") === "true" } catch {}
+})
+`
 
 export const ProfileList: FC<{ profiles: Profile[]; openId: string | null }> = ({
   profiles,
@@ -136,7 +207,9 @@ export const BrowserPage: FC<{
   url: string | null
   running: string | null
   screen: { width: number; height: number }
-}> = ({ user, profiles, openProfile, url, running, screen }) => (
+  resolution: number
+  resolutions: readonly number[]
+}> = ({ user, profiles, openProfile, url, running, screen, resolution, resolutions }) => (
   <Layout title="브라우저 · Remote Browser" user={user} section="browser" fill>
     <div class="grid">
       <section class="box">
@@ -172,7 +245,11 @@ export const BrowserPage: FC<{
       </section>
       <section class="box screen">
         <h2>원격 브라우저</h2>
-        <BrowserStatus profile={openProfile} url={url} running={running} />
+        <div class="row toolbar">
+          <BrowserStatus profile={openProfile} url={url} running={running} />
+          <BrowserControls resolution={resolution} resolutions={resolutions} />
+        </div>
+        <script dangerouslySetInnerHTML={{ __html: controlsScript }} />
         <div class="vnc-wrap" style={`--sw:${screen.width};--sh:${screen.height}`}>
           <iframe
             class="vnc"

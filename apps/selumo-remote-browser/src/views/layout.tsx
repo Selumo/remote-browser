@@ -44,7 +44,11 @@ body.fill main { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
 body.fill .grid { height: 100%; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
 body.fill .grid > .box { overflow: auto; }
 body.fill .grid > .box.screen { display: flex; flex-direction: column; overflow: hidden; }
-body.fill .grid > .box.screen > #browser-status p { margin: 0 0 8px; }
+.toolbar { margin-bottom: 8px; align-items: center; }
+.toolbar .status { min-width: 0; flex: 0 1 auto; }
+.toolbar .status .url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 36ch; }
+.toolbar .controls { flex: 1 1 auto; }
+.toolbar select { width: auto; padding: 3px 6px; }
 @media (max-width: 960px) {
   body.fill { height: auto; overflow: auto; }
   body.fill .grid { height: auto; }
