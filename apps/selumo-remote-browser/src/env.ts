@@ -23,6 +23,8 @@ const Env = z.object({
     .refine((v) => v === undefined || v.length >= 32, "MCP_TOKEN must be at least 32 characters"),
   ALLOWED_EMAILS: z.string().default(""),
   COOKIE_SECURE: z.enum(["true", "false"]).default("true"),
+  /** How long a job waits for a person to clear a bot check before failing. */
+  CHALLENGE_WAIT_MINUTES: z.coerce.number().min(0).max(120).default(10),
   /** Time zone used to evaluate job cron schedules. */
   SCHEDULE_TZ: z.string().default("Asia/Seoul"),
 })

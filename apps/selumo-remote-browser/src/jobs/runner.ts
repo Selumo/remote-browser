@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import type { Page } from "playwright"
-import { openProfile } from "../browser/manager.js"
+import { checkChallenge, waitForHuman } from "../browser/challenge.js"
+import { openProfile, requireActive } from "../browser/manager.js"
 import { env } from "../env.js"
 import {
   ensureSuperuser,
@@ -162,6 +163,22 @@ async function execute(job: Job, runId: string, profile: Profile, steps: Step[])
       await log(runId, "info", `#${index + 1} ${describeStep(step)}`)
       const result = await runStep(step, ctx)
       if (result) await log(runId, "info", result)
+      // A bot check pauses the run until a person clears it in the remote screen.
+      if (["goto", "click", "press", "fill"].includes(step.action)) {
+        const challenge = await checkChallenge(browser.page).catch(() => null)
+        if (challenge) {
+          const minutes = env.CHALLENGE_WAIT_MINUTES
+          await log(
+            runId,
+            "error",
+            `bot check: ${challenge.kind}. 대시보드 원격 화면에서 직접 해결해 주세요 (최대 ${minutes}분 대기)`,
+          )
+          const cleared = await waitForHuman(() => requireActive().page, minutes * 60_000)
+          if (!cleared)
+            throw new Error(`bot check not cleared within ${minutes} min: ${challenge.kind}`)
+          await log(runId, "info", "bot check cleared, continuing")
+        }
+      }
     }
     await log(runId, "info", `done, ${ctx.items} item(s) collected`)
     await pb

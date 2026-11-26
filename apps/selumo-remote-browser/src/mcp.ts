@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import type { Page } from "playwright"
 import { z } from "zod"
 import { locate, pageSummary, settle, snapshot } from "./browser/actions.js"
+import { currentChallenge, waitForHuman } from "./browser/challenge.js"
 import { profileCookies, summarize } from "./browser/cookies.js"
 import { available, currentResolution, setResolution } from "./browser/vnc.js"
 import {
@@ -66,6 +67,12 @@ const point = {
 
 const MAX_CSV_CHARS = 1_000_000
 
+/** Shown on the dashboard while the AI waits for a person (browser_wait_for_human). */
+let handoffReason: string | null = null
+export function currentHandoff(): string | null {
+  return handoffReason
+}
+
 /**
  * Builds a fresh MCP server per HTTP request (stateless transport). Every tool drives the single
  * shared browser and PocketBase, so state survives across requests and across MCP sessions.
@@ -94,11 +101,15 @@ export function buildMcpServer(): McpServer {
       guarded(async () => {
         const browser = current()
         if (!browser) return json({ open: null, running_run: runningRunId() })
+        const challenge = currentChallenge()
         const profile = await findProfile(browser.profileId).catch(() => null)
         return json({
           open: { profile: profile?.name ?? browser.profileId, url: browser.page.url() },
           tabs: tabs(),
           running_run: runningRunId(),
+          bot_check: challenge
+            ? { kind: challenge.kind, url: challenge.url, since: challenge.since }
+            : null,
         })
       }),
   )
@@ -285,6 +296,41 @@ export function buildMcpServer(): McpServer {
           resolution: `${currentResolution()}p`,
           available: available().map((h) => `${h}p`),
         })
+      }),
+  )
+
+  server.registerTool(
+    "browser_wait_for_human",
+    {
+      description:
+        "After a BOT CHECK warning: wait while a person solves the CAPTCHA or login challenge in the " +
+        "dashboard's remote screen. Returns when the check is gone or the timeout passes. Never solve " +
+        "CAPTCHAs yourself. Also use it to let a person log in or enter secrets.",
+      inputSchema: {
+        timeout_seconds: z.number().int().min(5).max(900).optional().describe("Default 300"),
+        reason: z
+          .string()
+          .max(200)
+          .optional()
+          .describe("Shown on the dashboard, e.g. 'please log in'"),
+      },
+    },
+    ({ timeout_seconds, reason }) =>
+      guarded(async () => {
+        requireActive()
+        handoffReason = reason ?? null
+        try {
+          const cleared = await waitForHuman(
+            () => requireActive().page,
+            (timeout_seconds ?? 300) * 1000,
+          )
+          const summary = await pageSummary(requireActive().page)
+          return text(
+            cleared ? `cleared by a person\n${summary}` : `still waiting (timed out)\n${summary}`,
+          )
+        } finally {
+          handoffReason = null
+        }
       }),
   )
 

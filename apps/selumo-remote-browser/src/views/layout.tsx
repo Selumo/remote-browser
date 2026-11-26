@@ -32,6 +32,8 @@ button:hover, .btn:hover, button.primary { background: #000; color: #fff; }
 button.primary:hover { background: #fff; color: #000; }
 .tag { display: inline-block; padding: 0 6px; border: 1px solid #000; }
 .tag.on { background: #000; color: #fff; }
+.tag.alert { background: #000; color: #fff; outline: 2px solid #000; outline-offset: 1px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { background: #fff; color: #000; } }
 /* The viewer frame keeps the remote screen's aspect ratio (--sw/--sh) at the largest size that
    fits its box, so the remote screen never gets black side bars. */
 .vnc-wrap { flex: 1; min-height: 0; container-type: size; display: flex; justify-content: center; align-items: flex-start; }
@@ -59,6 +61,7 @@ body.fill .grid > .box.screen { display: flex; flex-direction: column; overflow:
 .log li { padding: 1px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log li.error, .error { font-weight: bold; text-decoration: underline; }
 form p { margin: 10px 0 0; }
+.cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; }
 details.dom { border: 1px solid #000; margin-top: -1px; }
 details.dom > summary { display: grid; grid-template-columns: minmax(0, 2fr) 70px 70px 50px 60px 150px;
   gap: 8px; padding: 4px 8px; cursor: pointer; list-style: none; }

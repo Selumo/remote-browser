@@ -57,7 +57,9 @@ export const BrowserStatus: FC<{
   profile: Profile | null
   url: string | null
   running: string | null
-}> = ({ profile, url, running }) => (
+  challenge?: { kind: string } | null
+  handoff?: string | null
+}> = ({ profile, url, running, challenge, handoff }) => (
   <span
     id="browser-status"
     class="row status"
@@ -82,6 +84,15 @@ export const BrowserStatus: FC<{
         RUNNING {running}
       </a>
     ) : null}
+    {challenge ? (
+      <span
+        class="tag alert"
+        title="자동으로 풀지 않아요. 아래 원격 화면에서 직접 해결하면 AI와 작업이 이어서 진행해요."
+      >
+        봇 확인 필요: {challenge.kind} · 아래 화면에서 직접 해결
+      </span>
+    ) : null}
+    {handoff ? <span class="tag alert">AI가 기다리는 중: {handoff}</span> : null}
   </span>
 )
 
@@ -159,6 +170,22 @@ document.addEventListener("DOMContentLoaded", () => {
 })
 `
 
+const ENGINE_LABEL: Record<string, string> = {
+  chromium: "Chromium",
+  firefox: "Firefox",
+  webkit: "WebKit",
+}
+
+/** Short summary of a profile's browser settings, e.g. "Chromium · 모바일". */
+export const profileBadge = (p: Profile) =>
+  [
+    ENGINE_LABEL[p.engine || "chromium"],
+    p.device === "mobile" ? "모바일" : "",
+    p.proxy ? "프록시" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ")
+
 export const ProfileList: FC<{ profiles: Profile[]; openId: string | null }> = ({
   profiles,
   openId,
@@ -173,9 +200,14 @@ export const ProfileList: FC<{ profiles: Profile[]; openId: string | null }> = (
       {profiles.map((p) => (
         <tr>
           <td class="wrap">
-            <strong>{p.name}</strong> {p.id === openId ? <span class="tag on">OPEN</span> : null}
-            <br />
-            <span class="muted">{p.start_url}</span>
+            <strong>{p.name}</strong> {p.id === openId ? <span class="tag on">OPEN</span> : null}{" "}
+            <span class="muted">{profileBadge(p)}</span>
+            {p.notes ? (
+              <>
+                <br />
+                <span class="muted">{p.notes}</span>
+              </>
+            ) : null}
           </td>
           <td style="white-space:nowrap">
             <button
@@ -231,10 +263,9 @@ export const BrowserPage: FC<{
           >
             <label>이름</label>
             <input name="name" required maxlength={100} placeholder="naver-main" />
-            <label>시작 URL (선택)</label>
-            <input name="start_url" type="url" placeholder="https://" />
             <label>메모 (선택)</label>
             <input name="notes" maxlength={2000} />
+            <p class="muted">브라우저 종류 등 세부 설정은 프로필 메뉴에서 바꿀 수 있어요.</p>
             <p>
               <button class="primary" type="submit">
                 만들기
@@ -628,7 +659,8 @@ export const ProfilesPage: FC<{
   selected: Profile | null
   source: "live" | "disk" | "closed" | null
   summary: DomainSummary[]
-}> = ({ user, profiles, openId, selected, source, summary }) => (
+  error?: string | undefined
+}> = ({ user, profiles, openId, selected, source, summary, error }) => (
   <Layout title="프로필 · Remote Browser" user={user} section="profiles">
     <div class="grid">
       <section class="box">
@@ -649,9 +681,14 @@ export const ProfilesPage: FC<{
                   >
                     <strong>{p.name}</strong>
                   </a>{" "}
-                  {p.id === openId ? <span class="tag on">OPEN</span> : null}
-                  <br />
-                  <span class={p.id === selected?.id ? "" : "muted"}>{p.start_url}</span>
+                  {p.id === openId ? <span class="tag on">OPEN</span> : null}{" "}
+                  <span class={p.id === selected?.id ? "" : "muted"}>{profileBadge(p)}</span>
+                  {p.notes ? (
+                    <>
+                      <br />
+                      <span class={p.id === selected?.id ? "" : "muted"}>{p.notes}</span>
+                    </>
+                  ) : null}
                 </td>
               </tr>
             ))}
@@ -661,8 +698,6 @@ export const ProfilesPage: FC<{
         <form method="post" action="/profiles/new">
           <label>이름</label>
           <input name="name" required maxlength={100} placeholder="naver-main" />
-          <label>시작 URL (선택)</label>
-          <input name="start_url" type="url" placeholder="https://" />
           <label>메모 (선택)</label>
           <input name="notes" maxlength={2000} />
           <p>
@@ -672,96 +707,221 @@ export const ProfilesPage: FC<{
           </p>
         </form>
       </section>
-      <section class="box">
-        <h2>저장된 로그인</h2>
-        {!selected ? (
-          <p class="muted">왼쪽에서 프로필을 고르세요.</p>
-        ) : (
-          <>
-            <p class="row">
-              <strong>{selected.name}</strong>
-              <span class="muted">
-                {source === "live"
-                  ? "열린 브라우저에서 실시간으로 읽음"
-                  : "저장된 쿠키 파일에서 읽음"}{" "}
-                · 쿠키 값은 표시하지 않아요
-              </span>
-              <button hx-post={`/profiles/${selected.id}/open`} hx-swap="none">
-                브라우저에서 열기
-              </button>
-            </p>
-            {selected.notes ? <p class="muted">{selected.notes}</p> : null}
-            {summary.length === 0 ? (
-              <p class="muted">
-                저장된 쿠키가 없어요. 브라우저에서 열고 사이트에 로그인하면 여기에 나와요.
+      <div style="display:grid;gap:16px;min-width:0">
+        {selected ? <ProfileSettings profile={selected} error={error} /> : null}
+        <section class="box">
+          <h2>저장된 로그인</h2>
+          {!selected ? (
+            <p class="muted">왼쪽에서 프로필을 고르세요.</p>
+          ) : (
+            <>
+              <p class="row">
+                <strong>{selected.name}</strong>
+                <span class="muted">
+                  {source === "live"
+                    ? "열린 브라우저에서 실시간으로 읽음"
+                    : "저장된 쿠키 파일에서 읽음"}{" "}
+                  · 쿠키 값은 표시하지 않아요
+                </span>
+                <button hx-post={`/profiles/${selected.id}/open`} hx-swap="none">
+                  브라우저에서 열기
+                </button>
               </p>
-            ) : (
-              <div class="scroll" style="max-height:none">
-                <details class="dom" open={false}>
-                  <summary class="head">
-                    <span>사이트</span>
-                    <span>상태</span>
-                    <span>로그인</span>
-                    <span>전체</span>
-                    <span>만료됨</span>
-                    <span>가장 늦은 만료</span>
-                  </summary>
-                </details>
-                {summary.map((g) => (
-                  <details class="dom">
-                    <summary>
-                      <span class="wrap">{g.domain}</span>
-                      <span>
-                        <span class={`tag ${g.status === "valid" ? "on" : ""}`}>
-                          {STATUS_LABEL[g.status]}
-                        </span>
-                      </span>
-                      <span>{g.login}</span>
-                      <span>{g.total}</span>
-                      <span>{g.expired}</span>
-                      <span>{fmtUnix(g.latestExpiry)}</span>
+              {selected.notes ? <p class="muted">{selected.notes}</p> : null}
+              {summary.length === 0 ? (
+                <p class="muted">
+                  저장된 쿠키가 없어요. 브라우저에서 열고 사이트에 로그인하면 여기에 나와요.
+                </p>
+              ) : (
+                <div class="scroll" style="max-height:none">
+                  <details class="dom" open={false}>
+                    <summary class="head">
+                      <span>사이트</span>
+                      <span>상태</span>
+                      <span>로그인</span>
+                      <span>전체</span>
+                      <span>만료됨</span>
+                      <span>가장 늦은 만료</span>
                     </summary>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>쿠키</th>
-                          <th>상태</th>
-                          <th>만료</th>
-                          <th>속성</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {g.cookies.map((c) => (
-                          <tr>
-                            <td class="wrap">
-                              {c.loginLike ? <strong>{c.name}</strong> : c.name}
-                              {c.domain !== g.domain ? (
-                                <span class="muted"> ({c.domain})</span>
-                              ) : null}
-                            </td>
-                            <td>{STATUS_LABEL[c.status]}</td>
-                            <td>{fmtUnix(c.expires)}</td>
-                            <td class="muted">
-                              {[c.httpOnly ? "HttpOnly" : "", c.secure ? "Secure" : ""]
-                                .filter(Boolean)
-                                .join(" ")}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
                   </details>
-                ))}
-              </div>
-            )}
-            <p class="muted">
-              로그인 쿠키는 이름(session, auth, token, NID_AUT 등)으로 추정해요. 사이트마다 실제
-              로그인 유지 여부는 다를 수 있어요. 일부 사이트는 쿠키 대신 localStorage에 토큰을
-              두는데, 그건 여기 나오지 않아요.
-            </p>
-          </>
-        )}
-      </section>
+                  {summary.map((g) => (
+                    <details class="dom">
+                      <summary>
+                        <span class="wrap">{g.domain}</span>
+                        <span>
+                          <span class={`tag ${g.status === "valid" ? "on" : ""}`}>
+                            {STATUS_LABEL[g.status]}
+                          </span>
+                        </span>
+                        <span>{g.login}</span>
+                        <span>{g.total}</span>
+                        <span>{g.expired}</span>
+                        <span>{fmtUnix(g.latestExpiry)}</span>
+                      </summary>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>쿠키</th>
+                            <th>상태</th>
+                            <th>만료</th>
+                            <th>속성</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {g.cookies.map((c) => (
+                            <tr>
+                              <td class="wrap">
+                                {c.loginLike ? <strong>{c.name}</strong> : c.name}
+                                {c.domain !== g.domain ? (
+                                  <span class="muted"> ({c.domain})</span>
+                                ) : null}
+                              </td>
+                              <td>{STATUS_LABEL[c.status]}</td>
+                              <td>{fmtUnix(c.expires)}</td>
+                              <td class="muted">
+                                {[c.httpOnly ? "HttpOnly" : "", c.secure ? "Secure" : ""]
+                                  .filter(Boolean)
+                                  .join(" ")}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </details>
+                  ))}
+                </div>
+              )}
+              <p class="muted">
+                로그인 쿠키는 이름(session, auth, token, NID_AUT 등)으로 추정해요. 사이트마다 실제
+                로그인 유지 여부는 다를 수 있어요. 일부 사이트는 쿠키 대신 localStorage에 토큰을
+                두는데, 그건 여기 나오지 않아요.
+              </p>
+            </>
+          )}
+        </section>
+      </div>
     </div>
   </Layout>
+)
+
+const TIMEZONES = [
+  "Asia/Seoul",
+  "Asia/Tokyo",
+  "Asia/Shanghai",
+  "Asia/Singapore",
+  "Europe/London",
+  "Europe/Berlin",
+  "America/New_York",
+  "America/Los_Angeles",
+  "UTC",
+]
+const LOCALES = ["ko-KR", "en-US", "ja-JP", "zh-CN", "en-GB"]
+
+export const ProfileSettings: FC<{ profile: Profile; error?: string | undefined }> = ({
+  profile: p,
+  error,
+}) => (
+  <section class="box">
+    <h2>프로필 설정</h2>
+    {error ? <p class="error">{error}</p> : null}
+    <form method="post" action={`/profiles/${p.id}/settings`}>
+      <div class="cols">
+        <div>
+          <label>이름</label>
+          <input name="name" required maxlength={100} value={p.name} />
+        </div>
+        <div>
+          <label>메모</label>
+          <input name="notes" maxlength={2000} value={p.notes} />
+        </div>
+        <div>
+          <label>브라우저</label>
+          <select name="engine">
+            {(["chromium", "firefox", "webkit"] as const).map((e) => (
+              <option value={e} selected={(p.engine || "chromium") === e}>
+                {ENGINE_LABEL[e]}
+                {e === "chromium"
+                  ? " (추천, 로그인 호환성 가장 좋음)"
+                  : e === "webkit"
+                    ? " (가벼움, 일부 사이트 호환 낮음)"
+                    : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>기기</label>
+          <select name="device">
+            <option value="desktop" selected={p.device !== "mobile"}>
+              데스크톱 (1920x1080 창)
+            </option>
+            <option value="mobile" selected={p.device === "mobile"}>
+              모바일 (휴대폰 화면, 모바일 사이트)
+            </option>
+          </select>
+        </div>
+        <div>
+          <label>언어</label>
+          <input name="locale" list="locales" value={p.locale || "ko-KR"} />
+          <datalist id="locales">
+            {LOCALES.map((l) => (
+              <option value={l} />
+            ))}
+          </datalist>
+        </div>
+        <div>
+          <label>시간대</label>
+          <input
+            name="timezone"
+            list="timezones"
+            value={p.timezone || ""}
+            placeholder="Asia/Seoul (기본)"
+          />
+          <datalist id="timezones">
+            {TIMEZONES.map((t) => (
+              <option value={t} />
+            ))}
+          </datalist>
+        </div>
+        <div>
+          <label>화면 테마</label>
+          <select name="color_scheme">
+            <option value="" selected={!p.color_scheme}>
+              사이트 기본
+            </option>
+            <option value="light" selected={p.color_scheme === "light"}>
+              라이트
+            </option>
+            <option value="dark" selected={p.color_scheme === "dark"}>
+              다크
+            </option>
+          </select>
+        </div>
+        <div>
+          <label>프록시 (선택)</label>
+          <input
+            name="proxy"
+            value={p.proxy}
+            placeholder="http://host:port 또는 socks5://host:port"
+          />
+        </div>
+      </div>
+      <label class="row">
+        <input type="checkbox" name="stealth" value="1" checked={p.stealth} /> 자동화 탐지 완화
+        (Chromium, 구글·네이버 로그인이 막힐 때 켜기)
+      </label>
+      <p class="muted">
+        브라우저 종류를 바꾸면 그 브라우저용 로그인 정보는 따로 저장돼서 처음엔 로그아웃 상태예요.
+        열려 있는 프로필은 저장하면 새 설정으로 다시 열려요.
+      </p>
+      <p class="row">
+        <button class="primary" type="submit">
+          저장
+        </button>
+        <button type="button" hx-post={`/profiles/${p.id}/open`} hx-swap="none">
+          브라우저에서 열기
+        </button>
+      </p>
+    </form>
+  </section>
 )

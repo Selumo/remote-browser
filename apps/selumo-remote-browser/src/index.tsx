@@ -25,7 +25,8 @@ import { env } from "./env.js"
 import { allItems, columnsOf, listItems, toCsv } from "./jobs/crawl.js"
 import { runEvents, runningRunId, startRun, type RunEvent } from "./jobs/runner.js"
 import { nextRun, startScheduler } from "./jobs/scheduler.js"
-import { buildMcpServer } from "./mcp.js"
+import { buildMcpServer, currentHandoff } from "./mcp.js"
+import { checkChallenge } from "./browser/challenge.js"
 import {
   ensureAdminUser,
   ensureSuperuser,
@@ -46,6 +47,7 @@ import {
   listProfiles,
   listRuns,
   updateJob,
+  updateProfile,
 } from "./services.js"
 import { serveFile, vendorFiles } from "./static.js"
 import { viewerHtml } from "./views/viewer.js"
@@ -182,15 +184,19 @@ app.get("/", requireUser, async (c) => {
   )
 })
 
-app.get("/partials/status", requireUser, async (c) =>
-  c.html(
+app.get("/partials/status", requireUser, async (c) => {
+  const page = current()?.page
+  const challenge = page ? await checkChallenge(page).catch(() => null) : null
+  return c.html(
     <BrowserStatus
       profile={await openProfileRecord()}
-      url={current()?.page.url() ?? null}
+      url={page?.url() ?? null}
       running={runningRunId()}
+      challenge={challenge}
+      handoff={currentHandoff()}
     />,
-  ),
-)
+  )
+})
 
 const profileList = async () => (
   <ProfileList profiles={await listProfiles()} openId={current()?.profileId ?? null} />
@@ -225,12 +231,11 @@ app.post("/browser/close", requireUser, async (c) => {
 
 // ---- profiles ----
 
-app.get("/profiles", requireUser, async (c) => {
+async function profilesPage(c: { get(key: "user"): string }, id?: string, error?: string) {
   const profiles = await listProfiles()
-  const id = c.req.query("id")
   const selected = (id ? profiles.find((p) => p.id === id) : profiles[0]) ?? null
   const data = selected ? await profileCookies(selected) : null
-  return c.html(
+  return (
     <ProfilesPage
       user={c.get("user")}
       profiles={profiles}
@@ -238,8 +243,32 @@ app.get("/profiles", requireUser, async (c) => {
       selected={selected}
       source={data?.source ?? null}
       summary={data ? summarize(data.cookies) : []}
-    />,
+      error={error}
+    />
   )
+}
+
+app.get("/profiles", requireUser, async (c) => c.html(await profilesPage(c, c.req.query("id"))))
+
+app.post("/profiles/:id/settings", requireUser, async (c) => {
+  const id = c.req.param("id")
+  const form = await c.req.formData()
+  try {
+    await updateProfile(id, {
+      name: formText(form, "name"),
+      notes: formText(form, "notes"),
+      engine: formText(form, "engine") as "chromium" | "firefox" | "webkit",
+      device: formText(form, "device") as "desktop" | "mobile",
+      locale: formText(form, "locale"),
+      timezone: formText(form, "timezone"),
+      color_scheme: formText(form, "color_scheme") as "light" | "dark" | "",
+      stealth: form.get("stealth") === "1",
+      proxy: formText(form, "proxy"),
+    })
+    return c.redirect(`/profiles?id=${id}`)
+  } catch (e) {
+    return c.html(await profilesPage(c, id, message(e)), 400)
+  }
 })
 
 app.post("/profiles/new", requireUser, async (c) => {

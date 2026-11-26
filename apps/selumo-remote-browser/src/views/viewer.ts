@@ -97,14 +97,27 @@ export function viewerHtml(opts: {
   }
   const clear = () => setTimeout(() => { ime.value = "" }, 0)
 
+  // Live composition: the syllable being typed is mirrored on the remote as it changes (only
+  // the part that differs is erased and rewritten), so text shows up without pressing space.
   let composing = false
   let sawProcessKey = false
-  ime.addEventListener("compositionstart", () => { composing = true })
-  ime.addEventListener("compositionupdate", (e) => showCompose(e.data))
+  let mirrored = []
+  function mirror(next) {
+    if (!rfb || settings.viewOnly) { mirrored = [...next]; return }
+    const want = [...next]
+    let same = 0
+    while (same < mirrored.length && same < want.length && mirrored[same] === want[same]) same++
+    for (let i = same; i < mirrored.length; i++) rfb.sendKey(0xff08, "Backspace")
+    sendText(want.slice(same).join(""))
+    mirrored = want
+  }
+  ime.addEventListener("compositionstart", () => { composing = true; mirrored = [] })
+  ime.addEventListener("compositionupdate", (e) => { showCompose(e.data); mirror(e.data) })
   ime.addEventListener("compositionend", (e) => {
     composing = false
     showCompose("")
-    sendText(e.data)
+    mirror(e.data ?? "")
+    mirrored = []
     clear()
   })
   // Text the IME inserts outside a composition (a space or punctuation right after a syllable).
@@ -113,6 +126,17 @@ export function viewerHtml(opts: {
     if (e.inputType === "insertText" && e.data) sendText(e.data)
     clear()
   })
+  // Held keys: the browser repeats keydown, noVNC forwards it as another press of a key that is
+  // already down, which X ignores. Send each repeat as release + press so it really repeats.
+  ime.addEventListener("keydown", (e) => {
+    if (!e.repeat || composing || e.keyCode === 229 || !rfb || settings.viewOnly) return
+    const keysym = keyboard._keyDownList?.[e.code]
+    if (!keysym) return
+    rfb.sendKey(keysym, e.code, false)
+    rfb.sendKey(keysym, e.code, true)
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }, true)
   // Enter that also commits a syllable arrives as keyCode 229, which noVNC drops.
   ime.addEventListener("keydown", (e) => { if (e.keyCode === 229) sawProcessKey = true }, true)
   ime.addEventListener("keyup", (e) => {

@@ -1,4 +1,5 @@
 import type { Locator, Page } from "playwright"
+import { challengeNote, checkChallenge } from "./challenge.js"
 
 export type Target = { ref?: string | undefined; selector?: string | undefined }
 
@@ -17,9 +18,11 @@ export function locate(page: Page, target: Target): Locator {
   throw new Error("Give either ref (from a snapshot) or a selector")
 }
 
+/** URL and title, plus a warning when the page is a bot check (every MCP action reports it). */
 export async function pageSummary(page: Page): Promise<string> {
   const title = await page.title().catch(() => "")
-  return `url: ${page.url()}\ntitle: ${title}`
+  const challenge = await checkChallenge(page).catch(() => null)
+  return `url: ${page.url()}\ntitle: ${title}${challengeNote(challenge)}`
 }
 
 /**
