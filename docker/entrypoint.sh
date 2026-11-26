@@ -35,8 +35,11 @@ mkdir -p "$HOME/.fluxbox"
 printf 'session.screen0.toolbar.visible: false\n' > "$HOME/.fluxbox/init"
 fluxbox >/dev/null 2>&1 &
 # -wait/-defer (ms) batch screen updates: fewer frames, less CPU while someone is watching.
+# VNC_SCALE shrinks only what is sent to noVNC (input is mapped back); empty sends full size.
+VNC_SCALE="${VNC_SCALE-1280x720}"
 x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -quiet -xkb \
-  -wait "${VNC_WAIT_MS:-40}" -defer "${VNC_DEFER_MS:-40}" &
+  -wait "${VNC_WAIT_MS:-40}" -defer "${VNC_DEFER_MS:-40}" \
+  ${VNC_SCALE:+-scale "$VNC_SCALE"} &
 websockify 127.0.0.1:6080 127.0.0.1:5900 >/dev/null 2>&1 &
 
 node /app/apps/selumo-remote-browser/dist/index.js &
