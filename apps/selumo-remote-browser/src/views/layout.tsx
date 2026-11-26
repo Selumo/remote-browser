@@ -61,6 +61,9 @@ body.fill .grid > .box.screen { display: flex; flex-direction: column; overflow:
 .log li { padding: 1px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log li.error, .error { font-weight: bold; text-decoration: underline; }
 form p { margin: 10px 0 0; }
+.typebar { margin-top: 8px; flex: none; flex-wrap: nowrap; }
+.typebar #tb-text { flex: 1; min-width: 0; font-size: 15px; }
+.typebar label, .typebar #tb-msg { white-space: nowrap; }
 .cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; }
 details.dom { border: 1px solid #000; margin-top: -1px; }
 details.dom > summary { display: grid; grid-template-columns: minmax(0, 2fr) 70px 70px 50px 60px 150px;

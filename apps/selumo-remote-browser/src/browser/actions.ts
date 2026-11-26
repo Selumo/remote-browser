@@ -56,21 +56,32 @@ export async function focusedValue(page: Page): Promise<string | null> {
  * fires beforeinput/input with inputType insertText, which React and other frameworks handle like
  * keyboard input. Falls back to CDP insertText when the focus is not an editable element.
  */
-export async function insertAtFocus(page: Page, text: string): Promise<void> {
+export async function insertAtFocus(
+  page: Page,
+  text: string,
+  opts: { replace?: boolean } = {},
+): Promise<void> {
   for (const frame of page.frames()) {
     const done = await frame
-      .evaluate((t) => {
-        if (!document.hasFocus()) return false
-        const el = document.activeElement as HTMLElement | null
-        if (!el) return false
-        const editable =
-          el.isContentEditable ||
-          el instanceof HTMLTextAreaElement ||
-          (el instanceof HTMLInputElement &&
-            /^(text|search|email|url|tel|password|number|)$/.test(el.type))
-        if (!editable) return false
-        return document.execCommand("insertText", false, t)
-      }, text)
+      .evaluate(
+        ({ t, replace }) => {
+          if (!document.hasFocus()) return false
+          const el = document.activeElement as HTMLElement | null
+          if (!el) return false
+          const editable =
+            el.isContentEditable ||
+            el instanceof HTMLTextAreaElement ||
+            (el instanceof HTMLInputElement &&
+              /^(text|search|email|url|tel|password|number|)$/.test(el.type))
+          if (!editable) return false
+          if (replace) {
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.select()
+            else document.execCommand("selectAll")
+          }
+          return document.execCommand("insertText", false, t)
+        },
+        { t: text, replace: opts.replace ?? false },
+      )
       .catch(() => false)
     if (done) return
   }

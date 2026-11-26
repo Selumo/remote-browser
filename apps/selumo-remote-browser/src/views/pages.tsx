@@ -97,14 +97,14 @@ export const BrowserStatus: FC<{
 )
 
 /**
- * Viewer controls on the status bar: stream resolution (server side, x11vnc), view only and
- * text insertion (handed to the viewer frame through window.viewer), fullscreen and close.
+ * Viewer controls on the status bar: stream resolution (server side, x11vnc), view only (handed
+ * to the viewer frame through window.viewer), the input modal switch, fullscreen and close.
  */
 export const BrowserControls: FC<{ resolution: number; resolutions: readonly number[] }> = ({
   resolution,
   resolutions,
 }) => (
-  <span class="row controls" x-data="{ text: false }">
+  <span class="row controls">
     <select
       id="vnc-res"
       title="보이는 화면의 해상도 (브라우저는 원본 그대로)"
@@ -119,9 +119,6 @@ export const BrowserControls: FC<{ resolution: number; resolutions: readonly num
     <label class="row" style="margin:0">
       <input type="checkbox" id="vnc-viewonly" onchange="rbSetViewOnly(this.checked)" /> 보기 전용
     </label>
-    <button type="button" x-on:click="text = !text" x-text="text ? '텍스트 닫기' : '텍스트 보내기'">
-      텍스트 보내기
-    </button>
     <button
       type="button"
       onclick="document.querySelector('iframe.vnc')?.requestFullscreen()"
@@ -132,24 +129,40 @@ export const BrowserControls: FC<{ resolution: number; resolutions: readonly num
     <button hx-post="/browser/close" hx-target="#browser-status" hx-swap="outerHTML">
       닫기
     </button>
-    <span x-show="text" class="row" style="flex-basis:100%">
-      <input
-        id="vnc-text"
-        placeholder="원격 화면의 입력칸을 클릭한 뒤 입력. 한글 가능"
-        style="flex:1"
-        onkeydown="if(event.key==='Enter' && !event.isComposing && event.keyCode!==229){event.preventDefault(); rbSendText()}"
-      />
-      <button type="button" class="primary" onclick="rbSendText()">
-        넣기
-      </button>
-      <span id="vnc-msg" class="muted" />
-    </span>
   </span>
+)
+
+/**
+ * Always-visible text bar under the remote screen: click a field in the remote page, type here
+ * with the local IME (Korean works), Enter inserts it exactly at the remote focus.
+ */
+export const TypeBar: FC = () => (
+  <form class="typebar row" onsubmit="event.preventDefault(); rbSendBar()">
+    <input
+      id="tb-text"
+      autocomplete="off"
+      placeholder="원격 화면의 입력칸을 클릭한 뒤 여기에 입력하고 Enter (한글 가능)"
+    />
+    <label class="row" style="margin:0" title="검색창처럼 넣고 바로 실행할 때">
+      <input type="checkbox" id="tb-enter" onchange="rbStore.set('barEnter', this.checked)" />{" "}
+      Enter도 누르기
+    </label>
+    <label class="row" style="margin:0">
+      <input type="checkbox" id="tb-replace" /> 기존 값 바꾸기
+    </label>
+    <button type="submit" class="primary">
+      넣기
+    </button>
+    <span id="tb-msg" class="muted" />
+  </form>
 )
 
 const controlsScript = `
 const rbFrame = () => document.querySelector("iframe.vnc")?.contentWindow?.viewer
-function rbMsg(t) { const m = document.getElementById("vnc-msg"); if (m) { m.textContent = t; setTimeout(() => { if (m.textContent === t) m.textContent = "" }, 2000) } }
+const rbStore = {
+  get(k, d) { try { const v = localStorage.getItem("rb." + k); return v === null ? d : v } catch { return d } },
+  set(k, v) { try { localStorage.setItem("rb." + k, String(v)) } catch {} },
+}
 async function rbSetResolution(sel) {
   const prev = sel.dataset.prev || sel.value
   const res = await fetch("/viewer/resolution", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ height: Number(sel.value) }) }).catch(() => null)
@@ -157,16 +170,28 @@ async function rbSetResolution(sel) {
   else { sel.value = prev; alert("해상도를 바꾸지 못했어요") }
 }
 function rbSetViewOnly(on) { try { localStorage.setItem("viewer.viewOnly", String(on)) } catch {} ; rbFrame()?.setViewOnly(on) }
-async function rbSendText() {
-  const input = document.getElementById("vnc-text"); const text = input.value
-  if (!text) return
-  const res = await fetch("/browser/insert-text", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) }).catch(() => null)
+// The form submits after the IME commits the composition, so the last Korean syllable is sent.
+async function rbSendBar() {
+  const input = document.getElementById("tb-text")
+  const text = input.value
+  const replace = document.getElementById("tb-replace").checked
+  const enter = document.getElementById("tb-enter").checked
+  const msg = document.getElementById("tb-msg")
+  if (!text && !replace && !enter) return
+  msg.textContent = "넣는 중…"
+  const res = await fetch("/browser/insert-text", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, replace, enter }) }).catch(() => null)
   const data = res ? await res.json().catch(() => ({})) : {}
-  if (res && res.ok) { input.value = ""; rbMsg("넣었어요") } else rbMsg("실패: " + (data.error || "연결 오류"))
+  if (res && res.ok) {
+    input.value = ""
+    document.getElementById("tb-replace").checked = false
+    msg.textContent = data.value === null ? "넣었어요 (원격에 선택된 입력칸이 없으면 안 보일 수 있어요)" : "넣었어요"
+  } else msg.textContent = "실패: " + (data.error || "연결 오류")
+  setTimeout(() => { if (msg.textContent.startsWith("넣었")) msg.textContent = "" }, 2500)
 }
 document.addEventListener("DOMContentLoaded", () => {
   const sel = document.getElementById("vnc-res"); if (sel) sel.dataset.prev = sel.value
   try { document.getElementById("vnc-viewonly").checked = localStorage.getItem("viewer.viewOnly") === "true" } catch {}
+  document.getElementById("tb-enter").checked = rbStore.get("barEnter", "false") === "true"
 })
 `
 
@@ -289,6 +314,7 @@ export const BrowserPage: FC<{
             allow="fullscreen; clipboard-read; clipboard-write"
           />
         </div>
+        <TypeBar />
       </section>
     </div>
   </Layout>

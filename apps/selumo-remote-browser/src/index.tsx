@@ -151,17 +151,24 @@ app.post("/viewer/resolution", requireUser, async (c) => {
 // ---- browser ----
 
 /** Viewer panel: insert text at the remote focus. VNC clipboard is Latin-1 only, this is UTF-8. */
+/**
+ * Inserts text at the remote focus (the input modal and the MCP-free text box use it). UTF-8
+ * safe, unlike the VNC clipboard. `replace` swaps the field's value, `enter` presses Enter after.
+ */
 app.post("/browser/insert-text", requireUser, async (c) => {
-  const body = (await c.req.json().catch(() => null)) as { text?: unknown } | null
+  const body = (await c.req.json().catch(() => null)) as {
+    text?: unknown
+    replace?: unknown
+    enter?: unknown
+  } | null
   const text = typeof body?.text === "string" ? body.text : ""
-  if (!text || text.length > 20_000)
+  const replace = body?.replace === true
+  if ((!text && !replace) || text.length > 20_000)
     return c.json({ error: "text is required (max 20000 chars)" }, 400)
   try {
     const { page } = requireActive()
-    const mode = (body as { mode?: unknown } | null)?.mode
-    if (mode === "cdp") await page.keyboard.insertText(text)
-    else if (mode === "type") await page.keyboard.type(text)
-    else await insertAtFocus(page, text)
+    await insertAtFocus(page, text, { replace })
+    if (body?.enter === true) await page.keyboard.press("Enter")
     return c.json({ ok: true, value: await focusedValue(page) })
   } catch (e) {
     return c.json({ error: message(e) }, 409)
