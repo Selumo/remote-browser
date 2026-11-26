@@ -1,0 +1,31 @@
+{
+  "name": "@selumo/remote-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.tsx",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.11",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "alpinejs": "^3.17.5",
+    "croner": "^11.0.1",
+    "hono": "^4.13.22",
+    "htmx-ext-sse": "^2.2.4",
+    "htmx.org": "^2.0.11",
+    "playwright": "1.65.1",
+    "pocketbase": "^0.29.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.4",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2",
+    "vitest": "4.1.11"
+  }
+}

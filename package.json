@@ -1,0 +1,21 @@
+{
+  "name": "remote-browser",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @selumo/remote-browser dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "oxlint apps",
+    "format": "oxfmt --check apps"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.68.0",
+    "oxlint": "^1.83.0",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.4.2"
+}

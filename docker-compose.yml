@@ -1,0 +1,26 @@
+# Dokploy: create a Compose service from this repository, set the variables from .env.example in
+# the Environment tab, and add a domain for service `app`, port 3000. Put Cloudflare Access in
+# front of that hostname.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    shm_size: "2gb"
+    expose:
+      - "3000"
+    environment:
+      - PB_SUPERUSER_EMAIL=${PB_SUPERUSER_EMAIL}
+      - PB_SUPERUSER_PASSWORD=${PB_SUPERUSER_PASSWORD}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - MCP_TOKEN=${MCP_TOKEN:-}
+      - ALLOWED_EMAILS=${ALLOWED_EMAILS:-}
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - SCHEDULE_TZ=${SCHEDULE_TZ:-Asia/Seoul}
+    volumes:
+      - data:/data
+
+volumes:
+  data:
