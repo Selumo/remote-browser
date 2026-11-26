@@ -12,10 +12,10 @@ PocketBase and export them as CSV. Everything the dashboard can do, MCP can do t
 |---|---|
 | Server | Hono on Node 24 (`@hono/node-server`), pages rendered with `hono/jsx` |
 | Front end | htmx with the SSE extension, Alpine.js only where local UI state is needed. Served from node_modules, no CDN |
-| Data | PocketBase: dashboard users (auth), profiles, jobs, job runs, logs and crawl items. Bound to 127.0.0.1, used by the app as a superuser |
+| Data | PocketBase: dashboard users (auth), profiles, jobs, job runs, logs, crawl items, docs and images. Downloads and uploads are files under `/data/downloads` and `/data/uploads`. Bound to 127.0.0.1, used by the app as a superuser |
 | Browser | Playwright Chromium, headful on the KasmVNC X server, one persistent context per profile under `/data/profiles/<id>` |
 | Remote view | KasmVNC (`Xkasmvnc`, X server and VNC over WebSocket in one) at `SCREEN_WIDTH`x`SCREEN_HEIGHT` (1920x1080). Its stock web client is served at `/kasm/` (settings in the URL hash, Kasm's UI hidden), `/viewer` redirects to it, WebSocket proxied at `/kasm/websockify`. The quality select uses Kasm's own presets (`video_quality` Low..Lossless) and reloads the client; the server honours them only through `-AllowOverride` in the entrypoint. Korean cannot be typed through VNC. Details and what was tried: `docs/remote-view.md` |
-| AI access | MCP Streamable HTTP at `/mcp`, stateless per request, the browser state lives in the process. Includes a virtual mouse (`mouse_*`) |
+| AI access | MCP Streamable HTTP at `/mcp`, stateless per request, the browser state lives in the process. 18 grouped tools (~4.5k tokens), including raw mouse/keyboard (`input`) and `browser ask_human` |
 | Scheduling | croner inside the app process, one cron per enabled job, evaluated in `SCHEDULE_TZ` |
 | UI | Black and white, square, monospace. No colors, no radius, no theme work |
 | Packaging | One container (`docker/Dockerfile`), deployed by Dokploy from `docker-compose.yml`, exposed through Cloudflare Tunnel with Cloudflare Access in front |
@@ -29,11 +29,15 @@ apps/selumo-remote-browser/src/
   auth.ts          PocketBase user session cookie, MCP bearer or Cloudflare Access identity
   pb.ts            Superuser client and record types
   services.ts      Profile, job and run operations shared by routes and MCP tools
-  browser/         The single shared Playwright context and AI-facing helpers
+  browser/         The single shared Playwright context and AI-facing helpers: page log and
+                   dialogs, files (downloads, uploads from people, intercepted file choosers),
+                   bookmarks (chrome://bookmarks API), history, login detection and requests
+                   for a person (help.ts)
   jobs/            Step schema, runner, cron scheduler, crawl extraction, CSV
   docs.ts          Markdown notes: [[wiki links]], ![[image]] embeds, #tags, backlinks
   images.ts        Stored images (captures, uploads, job screenshots) in PocketBase
-  mcp.ts           MCP tools (browser, virtual mouse, profiles, jobs, runs, crawl data, docs, images)
+  mcp.ts           MCP tools, 18 grouped by subject with an `action` argument; compact JSON
+                   output. Add new actions to an existing tool before adding a tool
   views/           hono/jsx pages (more.tsx: docs, data, images, MCP setup; kasm.ts: viewer CSS)
 pocketbase/remote-browser/pb_migrations/   JS migrations, applied when PocketBase starts
 docker/            Dockerfile and entrypoint for the single container

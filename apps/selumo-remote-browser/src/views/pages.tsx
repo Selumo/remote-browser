@@ -1,4 +1,6 @@
 import type { FC } from "hono/jsx"
+import type { Bookmark } from "../browser/bookmarks.js"
+import { helpLabel, type HelpRequest } from "../browser/help.js"
 import { QUALITIES, type Quality } from "../browser/vnc.js"
 import type { CookieStatus, DomainSummary } from "../browser/cookies.js"
 import { STEP_HELP } from "../jobs/steps.js"
@@ -59,14 +61,24 @@ export const BrowserStatus: FC<{
   url: string | null
   running: string | null
   challenge?: { kind: string } | null
-  handoff?: string | null
-}> = ({ profile, url, running, challenge, handoff }) => (
+  login?: { site: string } | null
+  help?: HelpRequest | null
+  chooser?: { multiple: boolean; site: string } | null
+}> = ({ profile, url, running, challenge, login, help, chooser }) => (
   <span
     id="browser-status"
     class="row status"
     hx-get="/partials/status"
     hx-trigger="every 5s"
     hx-swap="outerHTML"
+    data-help={help ? help.id : chooser ? "files" : ""}
+    data-help-text={
+      help
+        ? `${helpLabel(help.kind)}${help.site ? ` (${help.site})` : ""}`
+        : chooser
+          ? `${chooser.site}에서 파일을 기다려요`
+          : ""
+    }
   >
     {profile ? (
       <>
@@ -93,7 +105,58 @@ export const BrowserStatus: FC<{
         봇 확인 필요: {challenge.kind} · 아래 화면에서 직접 해결
       </span>
     ) : null}
-    {handoff ? <span class="tag alert">AI가 기다리는 중: {handoff}</span> : null}
+    {login && !help ? (
+      <span class="tag" title="로그인되지 않은 것 같아요. 아래 화면에서 로그인하면 저장돼요.">
+        로그인 페이지: {login.site}
+      </span>
+    ) : null}
+    {chooser ? (
+      <span class="help-request">
+        <strong>파일 선택 · {chooser.site || "원격 페이지"}</strong>
+        <span>
+          페이지가 파일을 기다려요{chooser.multiple ? " (여러 개 가능)" : ""}. 위의 "파일 올리기"로
+          내 PC의 파일을 고르면 바로 들어가요.
+        </span>
+        <button
+          type="button"
+          hx-post="/files/chooser/cancel"
+          hx-target="#browser-status"
+          hx-swap="outerHTML"
+        >
+          취소
+        </button>
+      </span>
+    ) : null}
+    {help ? (
+      <span class="help-request">
+        <strong>
+          요청 · {helpLabel(help.kind)}
+          {help.site ? ` (${help.site})` : ""}
+        </strong>
+        <span>{help.message}</span>
+        <span class="muted">
+          {help.from === "mcp" ? "AI" : help.from}가 기다리는 중. 아래 화면에서 처리한 뒤 완료를
+          누르세요.
+        </span>
+        <button
+          type="button"
+          class="primary"
+          hx-post={`/help/${help.id}/done`}
+          hx-target="#browser-status"
+          hx-swap="outerHTML"
+        >
+          완료
+        </button>
+        <button
+          type="button"
+          hx-post={`/help/${help.id}/cancelled`}
+          hx-target="#browser-status"
+          hx-swap="outerHTML"
+        >
+          거절
+        </button>
+      </span>
+    ) : null}
   </span>
 )
 
@@ -110,6 +173,14 @@ export const BrowserControls: FC<{ quality: Quality }> = ({ quality }) => (
         </option>
       ))}
     </select>
+    <label
+      class="btn"
+      title="내 PC의 파일을 원격 브라우저로 보내요. 페이지가 파일 선택창을 열었으면 바로 들어가요."
+    >
+      파일 올리기
+      <input type="file" id="rb-upload" multiple hidden onchange="rbUpload(this)" />
+    </label>
+    <span id="rb-upload-msg" class="muted" />
     <label class="row" style="margin:0">
       <input type="checkbox" id="vnc-viewonly" onchange="rbSetViewOnly(this.checked)" /> 보기 전용
     </label>
@@ -144,7 +215,38 @@ async function rbSetQuality(sel) {
   else { sel.value = prev; alert("화질을 바꾸지 못했어요") }
 }
 function rbSetViewOnly(on) { try { localStorage.setItem("viewer.viewOnly", String(on)) } catch {} ; rbReloadViewer() }
+// Files from this computer: stored as uploads, and put into the page's file chooser if it is open.
+async function rbUpload(input) {
+  const msg = document.getElementById("rb-upload-msg")
+  if (!input.files.length) return
+  const form = new FormData()
+  for (const f of input.files) form.append("file", f)
+  msg.textContent = "보내는 중…"
+  const res = await fetch("/files/upload", { method: "POST", body: form }).catch(() => null)
+  const data = res ? await res.json().catch(() => ({})) : {}
+  input.value = ""
+  if (!res || !res.ok) { msg.textContent = "실패: " + (data.error || "연결 오류"); return }
+  msg.textContent = data.filled ? "페이지에 넣었어요" : "올렸어요 (데이터 메뉴 · AI가 쓸 수 있어요)"
+  htmx.ajax("GET", "/partials/status", { target: "#browser-status", swap: "outerHTML" })
+  setTimeout(() => { msg.textContent = "" }, 4000)
+}
+// A new request for a person: flash the tab title and show a desktop notification if allowed.
+let rbLastHelp = ""
+const rbTitle = document.title
+function rbCheckHelp() {
+  const el = document.getElementById("browser-status")
+  const id = el?.dataset.help || ""
+  document.title = id ? "(!) " + rbTitle : rbTitle
+  if (id && id !== rbLastHelp && "Notification" in window && Notification.permission === "granted")
+    new Notification("Remote Browser", { body: el.dataset.helpText || "사람이 필요해요", tag: id })
+  rbLastHelp = id
+}
+document.addEventListener("htmx:afterSettle", rbCheckHelp)
+document.addEventListener("click", () => {
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission()
+}, { once: true })
 document.addEventListener("DOMContentLoaded", () => {
+  rbCheckHelp()
   const sel = document.getElementById("vnc-quality"); if (sel) sel.dataset.prev = sel.value
   const vo = document.getElementById("vnc-viewonly")
   if (vo) { vo.checked = rbViewOnly(); if (vo.checked) rbReloadViewer() }
@@ -641,8 +743,9 @@ export const ProfilesPage: FC<{
   selected: Profile | null
   source: "live" | "disk" | "closed" | null
   summary: DomainSummary[]
+  bookmarks: Bookmark[] | string
   error?: string | undefined
-}> = ({ user, profiles, openId, selected, source, summary, error }) => (
+}> = ({ user, profiles, openId, selected, source, summary, bookmarks, error }) => (
   <Layout title="프로필 · Remote Browser" user={user} section="profiles">
     <div class="grid">
       <section class="box">
@@ -781,9 +884,66 @@ export const ProfilesPage: FC<{
             </>
           )}
         </section>
+        {selected ? <BookmarksBox profile={selected} bookmarks={bookmarks} /> : null}
       </div>
     </div>
   </Layout>
+)
+
+/** Bookmarks of the selected profile; readable and editable only while it is open (Chromium). */
+const BookmarksBox: FC<{ profile: Profile; bookmarks: Bookmark[] | string }> = ({
+  profile,
+  bookmarks,
+}) => (
+  <section class="box">
+    <h2>북마크</h2>
+    {typeof bookmarks === "string" ? (
+      <p class="muted">{bookmarks}</p>
+    ) : (
+      <>
+        <form method="post" action={`/profiles/${profile.id}/bookmarks`} class="row">
+          <input name="title" placeholder="이름" required style="flex:1;min-width:120px" />
+          <input name="url" placeholder="https://..." required style="flex:2;min-width:200px" />
+          <input
+            name="folder"
+            placeholder="폴더 (비우면 북마크바)"
+            style="flex:1;min-width:120px"
+          />
+          <button type="submit">추가</button>
+        </form>
+        {bookmarks.length ? (
+          <table style="margin-top:8px">
+            <tr>
+              <th>폴더</th>
+              <th>이름</th>
+              <th>주소</th>
+              <th style="width:60px" />
+            </tr>
+            {bookmarks
+              .filter((b) => b.url)
+              .map((b) => (
+                <tr>
+                  <td class="muted">{b.folder}</td>
+                  <td>{b.title}</td>
+                  <td class="wrap">
+                    <a href={b.url} target="_blank" rel="noopener noreferrer">
+                      {b.url}
+                    </a>
+                  </td>
+                  <td>
+                    <form method="post" action={`/profiles/${profile.id}/bookmarks/${b.id}/delete`}>
+                      <button type="submit">삭제</button>
+                    </form>
+                  </td>
+                </tr>
+              ))}
+          </table>
+        ) : (
+          <p class="muted">북마크가 없어요.</p>
+        )}
+      </>
+    )}
+  </section>
 )
 
 const TIMEZONES = [

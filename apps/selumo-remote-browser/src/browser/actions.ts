@@ -1,5 +1,7 @@
 import type { Locator, Page } from "playwright"
 import { challengeNote, checkChallenge } from "./challenge.js"
+import { pendingChooser } from "./files.js"
+import { detectLogin, loginNote } from "./login.js"
 
 export type Target = { ref?: string | undefined; selector?: string | undefined }
 
@@ -22,7 +24,16 @@ export function locate(page: Page, target: Target): Locator {
 export async function pageSummary(page: Page): Promise<string> {
   const title = await page.title().catch(() => "")
   const challenge = await checkChallenge(page).catch(() => null)
-  return `url: ${page.url()}\ntitle: ${title}${challengeNote(challenge)}`
+  const login = challenge ? null : await detectLogin(page).catch(() => null)
+  const url = page.url()
+  const shown = url.length > 300 ? `${url.slice(0, 300)}…` : url
+  const chooser = pendingChooser()
+  const fileNote = chooser
+    ? `\n\n📎 FILE CHOOSER open (${chooser.multiple ? "multiple files" : "one file"}): act upload with files ` +
+      `and no ref. Files from the person's computer arrive as "upload:<name>" (files list); ask_human ` +
+      `kind "input" to ask them to send one through the dashboard.`
+    : ""
+  return `url: ${shown}\ntitle: ${title}${challengeNote(challenge)}${loginNote(login)}${fileNote}`
 }
 
 /**

@@ -50,5 +50,5 @@ Everything tried, and why it failed:
 4. A text box beside the screen that inserts text with Playwright: reliable, removed at the
    user's request.
 
-Korean can still be entered by AI agents with `browser_fill` / `keyboard_type`, which go through
+Korean can still be entered by AI agents with `act` (fill, type) or `input` (type), which go through
 Playwright, not VNC.

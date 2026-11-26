@@ -65,33 +65,9 @@ export async function checkChallenge(page: Page): Promise<Challenge | null> {
   return current
 }
 
-export function clearChallenge(): void {
-  current = null
-}
-
-/** Waits until a person clears the check (polls every 2 s). Returns false on timeout. */
-export async function waitForHuman(
-  getPage: () => Page,
-  timeoutMs: number,
-  onWait?: (c: Challenge) => void,
-): Promise<boolean> {
-  const until = Date.now() + timeoutMs
-  let announced = false
-  while (Date.now() < until) {
-    const c = await checkChallenge(getPage()).catch(() => null)
-    if (!c) return true
-    if (!announced) {
-      onWait?.(c)
-      announced = true
-    }
-    await new Promise((r) => setTimeout(r, 2000))
-  }
-  return false
-}
-
 export function challengeNote(c: Challenge | null): string {
   return c
-    ? `\n\n⚠ BOT CHECK: ${c.kind} at ${c.url}. Do not try to solve it. Ask the person to clear it in the ` +
-        `dashboard's remote screen (KasmVNC), then call browser_wait_for_human.`
+    ? `\n\n⚠ BOT CHECK: ${c.kind} at ${c.url}. Do not try to solve it. A person clears it in the ` +
+        `remote view: call browser ask_human with kind "captcha".`
     : ""
 }

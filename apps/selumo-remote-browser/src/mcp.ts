@@ -3,17 +3,34 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import type { Page } from "playwright"
 import { z } from "zod"
 import { locate, pageSummary, settle, snapshot } from "./browser/actions.js"
-import { currentChallenge, waitForHuman } from "./browser/challenge.js"
+import { addBookmark, deleteBookmark, listBookmarks, updateBookmark } from "./browser/bookmarks.js"
+import { currentChallenge } from "./browser/challenge.js"
 import { profileCookies, summarize } from "./browser/cookies.js"
-import { currentQuality, QUALITIES, setQuality } from "./browser/vnc.js"
+import {
+  deleteStored,
+  fillChooser,
+  listFiles,
+  mimeOf,
+  payload,
+  pendingChooser,
+  pendingDownloads,
+  readStored,
+  type Store,
+} from "./browser/files.js"
+import { askHuman, currentHelp } from "./browser/help.js"
+import { readHistory } from "./browser/history.js"
 import {
   closeActive,
+  closeTab,
   current,
+  newTab,
   openProfile,
   requireActive,
   selectTab,
   tabs,
 } from "./browser/manager.js"
+import { getDialogPolicy, readLog, setDialogPolicy, type LogKind } from "./browser/pagelog.js"
+import { currentQuality, QUALITIES, setQuality } from "./browser/vnc.js"
 import {
   allTags,
   appendDoc,
@@ -25,7 +42,7 @@ import {
   wikiTargets,
 } from "./docs.js"
 import { captureImage, deleteImage, findImage, imageFile, listImages } from "./images.js"
-import { allItems, listItems, toCsv } from "./jobs/crawl.js"
+import { allItems, extractRows, listItems, toCsv } from "./jobs/crawl.js"
 import { runningRunId, startRun } from "./jobs/runner.js"
 import { nextRun } from "./jobs/scheduler.js"
 import { STEP_HELP } from "./jobs/steps.js"
@@ -44,8 +61,17 @@ import {
   updateProfile,
 } from "./services.js"
 
+/**
+ * MCP tools, grouped by subject with an `action` argument so the tool list stays small (every
+ * tool description is sent with every request). Results are compact: one-line JSON, no padding.
+ */
+
 const text = (value: string): CallToolResult => ({ content: [{ type: "text", text: value }] })
-const json = (value: unknown): CallToolResult => text(JSON.stringify(value, null, 2))
+const json = (value: unknown): CallToolResult => text(JSON.stringify(value))
+
+const MAX_TEXT = 20_000
+const clip = (s: string, max = MAX_TEXT) =>
+  s.length > max ? `${s.slice(0, max)}\n... (${s.length - max} more chars)` : s
 
 async function guarded(fn: () => Promise<CallToolResult>): Promise<CallToolResult> {
   try {
@@ -58,117 +84,191 @@ async function guarded(fn: () => Promise<CallToolResult>): Promise<CallToolResul
   }
 }
 
-async function viewport(page: Page): Promise<{ width: number; height: number; dpr: number }> {
+function need<T>(value: T | undefined | null, name: string): T {
+  if (value === undefined || value === null || value === "") throw new Error(`${name} is required`)
+  return value
+}
+
+const iso = (unix: number | null) => (unix ? new Date(unix * 1000).toISOString() : null)
+
+async function viewport(page: Page) {
   return page.evaluate(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
+    w: window.innerWidth,
+    h: window.innerHeight,
     dpr: window.devicePixelRatio,
   }))
 }
 
 const target = {
-  ref: z.string().optional().describe("Element ref from browser_snapshot, e.g. e12"),
-  selector: z.string().optional().describe("Playwright selector, used when no ref is given"),
+  ref: z.string().optional().describe("Element ref from snapshot, e.g. e12"),
+  selector: z.string().optional().describe("CSS/Playwright selector, used when no ref"),
 }
 
-const point = {
-  x: z.number().min(0).describe("CSS pixels from the left edge of the page viewport"),
-  y: z.number().min(0).describe("CSS pixels from the top edge of the page viewport"),
-}
+// Async function built in Node and evaluated in the page as a function (CDP callFunctionOn), so
+// page CSP does not block it. `el` is the target element, or undefined.
+const AsyncFunction = (async () => undefined).constructor as new (
+  ...args: string[]
+) => (...a: unknown[]) => Promise<unknown>
 
-const MAX_CSV_CHARS = 1_000_000
-
-/** Shown on the dashboard while the AI waits for a person (browser_wait_for_human). */
-let handoffReason: string | null = null
-export function currentHandoff(): string | null {
-  return handoffReason
-}
-
-/**
- * Builds a fresh MCP server per HTTP request (stateless transport). Every tool drives the single
- * shared browser and PocketBase, so state survives across requests and across MCP sessions.
- */
-export function buildMcpServer(): McpServer {
-  const server = new McpServer(
-    { name: "selumo-remote-browser", version: "0.2.0" },
-    {
-      instructions: [
-        "A real Chromium on a remote desktop that keeps logins per profile, plus scheduled crawl jobs.",
-        "Browse: profiles_list -> profile_open -> browser_snapshot, then act with refs (browser_click, browser_fill).",
-        "When refs are not enough (canvas, maps, drag), take browser_screenshot and use mouse_* with its coordinates.",
-        "Automate: job_create with steps (extract saves rows), job_update to set a cron schedule and enabled,",
-        "job_run to run now, run_get for logs, crawl_items / crawl_csv for the collected data.",
-        "Only one profile and one job run at a time. A person may be watching through the remote view (KasmVNC).",
-      ].join(" "),
-    },
-  )
-
-  // ---------- browser ----------
-
-  server.registerTool(
-    "browser_status",
-    { description: "Which profile is open, the current URL, and the running job." },
-    () =>
-      guarded(async () => {
-        const browser = current()
-        if (!browser) return json({ open: null, running_run: runningRunId() })
-        const challenge = currentChallenge()
-        const profile = await findProfile(browser.profileId).catch(() => null)
-        return json({
-          open: { profile: profile?.name ?? browser.profileId, url: browser.page.url() },
-          tabs: tabs(),
-          running_run: runningRunId(),
-          bot_check: challenge
-            ? { kind: challenge.kind, url: challenge.url, since: challenge.since }
-            : null,
-        })
-      }),
-  )
-
-  server.registerTool(
-    "profile_open",
-    {
-      description: "Open a profile in the shared browser, closing any other open profile.",
-      inputSchema: { profile: z.string().describe("Profile id or exact name") },
-    },
-    ({ profile }) =>
-      guarded(async () => {
-        const record = await findProfile(profile)
-        const browser = await openProfile(record)
-        return text(`opened "${record.name}"\n${await pageSummary(browser.page)}`)
-      }),
-  )
-
-  server.registerTool("browser_close", { description: "Close the open profile's browser." }, () =>
-    guarded(async () => {
-      await closeActive()
-      return text("closed")
+/** Files for an upload: "upload:<name>" (sent from a person's computer), "download:<name>" or "image:<id|title>". */
+async function uploadFiles(files: string[]) {
+  return Promise.all(
+    files.map(async (ref) => {
+      const [kind, ...rest] = ref.split(":")
+      const key = rest.join(":")
+      if (kind === "upload" || kind === "download") return payload(kind, key)
+      if (kind === "image") {
+        const record = await findImage(key)
+        if (!record) throw new Error(`Image not found: ${key}`)
+        const res = await imageFile(record)
+        return {
+          name: record.file,
+          mimeType: res.headers.get("content-type") ?? "image/png",
+          buffer: Buffer.from(await res.arrayBuffer()),
+        }
+      }
+      throw new Error(
+        `File must be "upload:<name>", "download:<name>" or "image:<id|title>", got ${ref}`,
+      )
     }),
   )
+}
+
+export function buildMcpServer(): McpServer {
+  const server = new McpServer(
+    { name: "selumo-remote-browser", version: "0.3.0" },
+    {
+      instructions:
+        "Real Chromium on a remote desktop; logins persist per profile. Flow: profiles list -> " +
+        "browser open -> snapshot -> act with refs. extract/evaluate read the DOM. Use screenshot + " +
+        "input for canvas/maps. Never solve CAPTCHAs or guess passwords: browser ask_human gets a person. " +
+        "One profile and one job run at a time; a person may be watching.",
+    },
+  )
+
+  // ---------- browser session, navigation, tabs ----------
 
   server.registerTool(
-    "browser_navigate",
+    "browser",
     {
-      description: "Go to a URL, or back/forward in history.",
-      inputSchema: { url: z.string().describe('A URL, or "back" / "forward"') },
+      description:
+        "Session and navigation. status | open(profile) | close | goto(url) | back | forward | reload | " +
+        "tabs | tab_new(url?) | tab_select(index) | tab_close(index?) | ask_human(kind, message?, timeout_seconds?: " +
+        "ask the person to log in / clear a captcha / type something only they know / confirm, through the " +
+        "remote view; waits until done) | quality(quality?: remote view stream preset).",
+      inputSchema: {
+        action: z.enum([
+          "status",
+          "open",
+          "close",
+          "goto",
+          "back",
+          "forward",
+          "reload",
+          "tabs",
+          "tab_new",
+          "tab_select",
+          "tab_close",
+          "ask_human",
+          "quality",
+        ]),
+        profile: z.string().optional().describe("open: profile id or name"),
+        url: z.string().optional(),
+        index: z.number().int().min(0).optional().describe("Tab index"),
+        kind: z.enum(["login", "captcha", "input", "confirm"]).optional().describe("ask_human"),
+        message: z.string().max(300).optional().describe("ask_human: shown to the person"),
+        timeout_seconds: z
+          .number()
+          .int()
+          .min(5)
+          .max(1800)
+          .optional()
+          .describe("ask_human, default 600"),
+        quality: z.enum(["low", "medium", "high", "extreme", "lossless"]).optional(),
+      },
     },
-    ({ url }) =>
+    (a) =>
       guarded(async () => {
-        await settle(requireActive().page)
-        const { page } = requireActive()
-        if (url === "back") await page.goBack()
-        else if (url === "forward") await page.goForward()
-        else await page.goto(z.string().url().parse(url))
-        return text(await pageSummary(page))
+        switch (a.action) {
+          case "status": {
+            const browser = current()
+            if (!browser) return json({ open: null, running_run: runningRunId() })
+            const profile = await findProfile(browser.profileId).catch(() => null)
+            const c = currentChallenge()
+            return json({
+              profile: profile?.name ?? browser.profileId,
+              engine: browser.engine,
+              url: browser.page.url(),
+              tabs: tabs(),
+              running_run: runningRunId(),
+              bot_check: c ? { kind: c.kind, url: c.url } : null,
+              waiting_for_person: currentHelp(),
+              downloads: pendingDownloads(),
+              file_chooser_open: pendingChooser(),
+            })
+          }
+          case "open": {
+            const record = await findProfile(need(a.profile, "profile"))
+            const browser = await openProfile(record)
+            return text(`opened "${record.name}"\n${await pageSummary(browser.page)}`)
+          }
+          case "close":
+            await closeActive()
+            return text("closed")
+          case "goto": {
+            const { page } = requireActive()
+            await page.goto(z.string().url().parse(need(a.url, "url")))
+            return text(await pageSummary(page))
+          }
+          case "back":
+          case "forward":
+          case "reload": {
+            const { page } = requireActive()
+            if (a.action === "back") await page.goBack()
+            else if (a.action === "forward") await page.goForward()
+            else await page.reload()
+            return text(await pageSummary(page))
+          }
+          case "tabs":
+            return json(tabs())
+          case "tab_new":
+            return text(
+              await pageSummary(await newTab(a.url ? z.string().url().parse(a.url) : undefined)),
+            )
+          case "tab_select":
+            return text(await pageSummary(await selectTab(need(a.index, "index"))))
+          case "tab_close":
+            await closeTab(a.index)
+            return json(tabs())
+          case "ask_human": {
+            requireActive()
+            const outcome = await askHuman(() => requireActive().page, {
+              kind: a.kind ?? "login",
+              message: a.message,
+              from: "mcp",
+              timeoutMs: (a.timeout_seconds ?? 600) * 1000,
+            })
+            const said = {
+              done: "the person finished",
+              cancelled: "the person declined",
+              timeout: "no answer (timed out)",
+            }[outcome]
+            return text(`${said}\n${await pageSummary(requireActive().page)}`)
+          }
+          case "quality":
+            if (a.quality) setQuality(a.quality, "mcp")
+            return json({ quality: currentQuality(), available: Object.keys(QUALITIES) })
+        }
       }),
   )
 
+  // ---------- reading the page ----------
+
   server.registerTool(
-    "browser_snapshot",
+    "snapshot",
     {
       description:
-        "Accessibility snapshot of the current page with element refs ([ref=eN]) for browser_click / browser_fill. " +
-        "Set boxes to also get [box=x,y,w,h] viewport coordinates for mouse_* tools.",
+        "Accessibility tree of the page with element refs [ref=eN] for act/evaluate. boxes adds [box=x,y,w,h] for input.",
       inputSchema: { boxes: z.boolean().optional() },
     },
     ({ boxes }) =>
@@ -181,73 +281,9 @@ export function buildMcpServer(): McpServer {
   )
 
   server.registerTool(
-    "browser_click",
-    { description: "Click an element by ref or selector.", inputSchema: target },
-    (args) =>
-      guarded(async () => {
-        const { page } = requireActive()
-        await locate(page, args).first().click()
-        await settle(page)
-        return text(await pageSummary(requireActive().page))
-      }),
-  )
-
-  server.registerTool(
-    "browser_fill",
+    "screenshot",
     {
-      description: "Fill a text input by ref or selector.",
-      inputSchema: { ...target, value: z.string() },
-    },
-    ({ value, ...t }) =>
-      guarded(async () => {
-        const { page } = requireActive()
-        await locate(page, t).first().fill(value)
-        return text("filled")
-      }),
-  )
-
-  server.registerTool(
-    "browser_press",
-    {
-      description: "Press a key, optionally on an element (e.g. Enter, Tab, Control+A).",
-      inputSchema: { key: z.string(), ref: target.ref, selector: target.selector },
-    },
-    ({ key, ...t }) =>
-      guarded(async () => {
-        const { page } = requireActive()
-        if (t.ref || t.selector) await locate(page, t).first().press(key)
-        else await page.keyboard.press(key)
-        await settle(page)
-        return text(await pageSummary(requireActive().page))
-      }),
-  )
-
-  server.registerTool(
-    "browser_wait_for",
-    {
-      description: "Wait for an element or visible text to appear.",
-      inputSchema: {
-        selector: z.string().optional(),
-        text: z.string().optional(),
-        timeout_ms: z.number().int().min(0).max(120_000).optional(),
-      },
-    },
-    ({ selector, text: needle, timeout_ms }) =>
-      guarded(async () => {
-        const { page } = requireActive()
-        const timeout = timeout_ms ?? 30_000
-        if (selector) await page.locator(selector).first().waitFor({ timeout })
-        else if (needle) await page.getByText(needle).first().waitFor({ timeout })
-        else throw new Error("Give selector or text")
-        return text("found")
-      }),
-  )
-
-  server.registerTool(
-    "browser_screenshot",
-    {
-      description:
-        "Screenshot of the current viewport. Its pixel coordinates (divided by dpr) are what mouse_* tools take.",
+      description: "PNG of the viewport (CSS px = image px / dpr, the coordinates input takes).",
       inputSchema: { full_page: z.boolean().optional() },
     },
     ({ full_page }) =>
@@ -259,7 +295,7 @@ export function buildMcpServer(): McpServer {
           content: [
             {
               type: "text",
-              text: `viewport ${vp.width}x${vp.height} css px, dpr ${vp.dpr}. ${await pageSummary(page)}`,
+              text: `viewport ${vp.w}x${vp.h} dpr ${vp.dpr}\n${await pageSummary(page)}`,
             },
             { type: "image", data: png.toString("base64"), mimeType: "image/png" },
           ],
@@ -267,440 +303,582 @@ export function buildMcpServer(): McpServer {
       }),
   )
 
-  server.registerTool("browser_tabs", { description: "List open tabs." }, () =>
-    guarded(async () =>
-      text(
-        tabs()
-          .map((t) => `${t.index}${t.active ? "*" : " "} ${t.url}`)
-          .join("\n"),
-      ),
-    ),
-  )
-
   server.registerTool(
-    "browser_select_tab",
-    { description: "Switch to a tab by index.", inputSchema: { index: z.number().int().min(0) } },
-    ({ index }) =>
-      guarded(async () => {
-        const page = await selectTab(index)
-        return text(await pageSummary(page))
-      }),
-  )
-
-  server.registerTool(
-    "viewer_quality",
+    "extract",
     {
       description:
-        "Get or set the stream quality people see in the remote view (KasmVNC presets; applies when the view reloads). The browser itself and screenshots are not affected.",
+        "Read rows from the DOM: each element matching selector becomes a row. fields maps names to a " +
+        'sub-selector or {selector?, attr} (e.g. {"title":"a","url":{"selector":"a","attr":"href"}}). ' +
+        "Without fields returns each match's text.",
       inputSchema: {
-        quality: z
-          .enum(["low", "medium", "high", "extreme", "lossless"])
-          .optional()
-          .describe("Omit to read the current one"),
-      },
-    },
-    ({ quality }) =>
-      guarded(async () => {
-        if (quality !== undefined) setQuality(quality, "mcp")
-        return json({ quality: currentQuality(), available: Object.keys(QUALITIES) })
-      }),
-  )
-
-  server.registerTool(
-    "browser_wait_for_human",
-    {
-      description:
-        "After a BOT CHECK warning: wait while a person solves the CAPTCHA or login challenge in the " +
-        "dashboard's remote screen. Returns when the check is gone or the timeout passes. Never solve " +
-        "CAPTCHAs yourself. Also use it to let a person log in or enter secrets.",
-      inputSchema: {
-        timeout_seconds: z.number().int().min(5).max(900).optional().describe("Default 300"),
-        reason: z
-          .string()
-          .max(200)
-          .optional()
-          .describe("Shown on the dashboard, e.g. 'please log in'"),
-      },
-    },
-    ({ timeout_seconds, reason }) =>
-      guarded(async () => {
-        requireActive()
-        handoffReason = reason ?? null
-        try {
-          const cleared = await waitForHuman(
-            () => requireActive().page,
-            (timeout_seconds ?? 300) * 1000,
+        selector: z.string(),
+        fields: z
+          .record(
+            z.string(),
+            z.union([
+              z.string(),
+              z.object({ selector: z.string().optional(), attr: z.string().optional() }),
+            ]),
           )
-          const summary = await pageSummary(requireActive().page)
+          .optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+    },
+    ({ selector, fields, limit }) =>
+      guarded(async () => {
+        const { page } = requireActive()
+        const n = limit ?? 50
+        if (fields) return text(clip(JSON.stringify(await extractRows(page, selector, fields, n))))
+        const texts = await page
+          .locator(selector)
+          .evaluateAll(
+            (els, n) =>
+              els
+                .slice(0, n)
+                .map((e) => ((e as HTMLElement).innerText ?? e.textContent ?? "").trim()),
+            n,
+          )
+        return text(clip(JSON.stringify(texts)))
+      }),
+  )
+
+  server.registerTool(
+    "evaluate",
+    {
+      description:
+        "Run JavaScript in the page as an async function body (use return). With ref/selector the element is `el`. " +
+        "Result is JSON (max 20k chars).",
+      inputSchema: { script: z.string().max(50_000), ...target },
+    },
+    ({ script, ref, selector }) =>
+      guarded(async () => {
+        const { page } = requireActive()
+        const fn = new AsyncFunction("el", script)
+        const result =
+          ref || selector
+            ? await (
+                await locate(page, { ref, selector }).first().elementHandle({ timeout: 10_000 })
+              ).evaluate(fn)
+            : await page.evaluate(fn)
+        return text(
+          clip(result === undefined ? "undefined" : (JSON.stringify(result) ?? String(result))),
+        )
+      }),
+  )
+
+  // ---------- acting on the page ----------
+
+  server.registerTool(
+    "act",
+    {
+      description:
+        "Act on an element (ref or selector): click | dblclick | fill(value) | type(value, keystrokes) | " +
+        "press(key, element optional, e.g. Enter, Control+A) | select(values) | check | uncheck | hover | " +
+        'focus | scroll(into view) | upload(files: "upload:<name>" sent from the person computer, ' +
+        '"download:<name>", "image:<id|title>"; without ref/selector it fills the file chooser the page opened).',
+      inputSchema: {
+        action: z.enum([
+          "click",
+          "dblclick",
+          "fill",
+          "type",
+          "press",
+          "select",
+          "check",
+          "uncheck",
+          "hover",
+          "focus",
+          "scroll",
+          "upload",
+        ]),
+        ...target,
+        value: z.string().optional(),
+        key: z.string().optional(),
+        values: z.array(z.string()).optional().describe("select: option values or labels"),
+        files: z.array(z.string()).optional(),
+        button: z.enum(["left", "right", "middle"]).optional(),
+      },
+    },
+    (a) =>
+      guarded(async () => {
+        const { page } = requireActive()
+        const hasTarget = Boolean(a.ref || a.selector)
+        if (a.action === "upload" && !hasTarget) {
+          const files = await uploadFiles(need(a.files, "files"))
+          if (!(await fillChooser(files)))
+            throw new Error(
+              "No file chooser is open; click the page's upload button first, or give the file input's ref",
+            )
+          await settle(page)
           return text(
-            cleared ? `cleared by a person\n${summary}` : `still waiting (timed out)\n${summary}`,
+            `uploaded ${files.map((f) => f.name).join(", ")}\n${await pageSummary(requireActive().page)}`,
           )
-        } finally {
-          handoffReason = null
+        }
+        if (a.action === "press" && !hasTarget) {
+          await page.keyboard.press(need(a.key, "key"))
+          await settle(page)
+          return text(await pageSummary(requireActive().page))
+        }
+        if (!hasTarget) throw new Error("ref or selector is required")
+        const el = locate(page, a).first()
+        let note = "ok"
+        switch (a.action) {
+          case "click":
+            await el.click({ button: a.button ?? "left" })
+            break
+          case "dblclick":
+            await el.dblclick()
+            break
+          case "fill":
+            await el.fill(a.value ?? "")
+            return text("filled")
+          case "type":
+            await el.pressSequentially(need(a.value, "value"), { delay: 20 })
+            return text("typed")
+          case "press":
+            await el.press(need(a.key, "key"))
+            break
+          case "select":
+            note = `selected ${JSON.stringify(await el.selectOption(a.values ?? need(a.value, "values")))}`
+            break
+          case "check":
+            await el.check()
+            break
+          case "uncheck":
+            await el.uncheck()
+            break
+          case "hover":
+            await el.hover()
+            return text("hovered")
+          case "focus":
+            await el.focus()
+            return text("focused")
+          case "scroll":
+            await el.scrollIntoViewIfNeeded()
+            return text("scrolled into view")
+          case "upload": {
+            const files = await uploadFiles(need(a.files, "files"))
+            await el.setInputFiles(files)
+            return text(`uploaded ${files.map((f) => f.name).join(", ")}`)
+          }
+        }
+        await settle(page)
+        return text(`${note}\n${await pageSummary(requireActive().page)}`)
+      }),
+  )
+
+  server.registerTool(
+    "wait",
+    {
+      description:
+        "Wait for: selector (gone=true to wait until hidden) | text | url (glob, e.g. **/done) | load " +
+        "(load, domcontentloaded, networkidle) | ms.",
+      inputSchema: {
+        selector: z.string().optional(),
+        text: z.string().optional(),
+        url: z.string().optional(),
+        load: z.enum(["load", "domcontentloaded", "networkidle"]).optional(),
+        ms: z.number().int().min(0).max(60_000).optional(),
+        gone: z.boolean().optional(),
+        timeout_ms: z.number().int().min(0).max(120_000).optional(),
+      },
+    },
+    (a) =>
+      guarded(async () => {
+        const { page } = requireActive()
+        const timeout = a.timeout_ms ?? 30_000
+        const state = a.gone ? ("hidden" as const) : ("visible" as const)
+        if (a.ms !== undefined) await page.waitForTimeout(a.ms)
+        else if (a.selector) await page.locator(a.selector).first().waitFor({ state, timeout })
+        else if (a.text) await page.getByText(a.text).first().waitFor({ state, timeout })
+        else if (a.url) await page.waitForURL(a.url, { timeout })
+        else if (a.load) await page.waitForLoadState(a.load, { timeout })
+        else throw new Error("Give selector, text, url, load or ms")
+        return text(`done\n${await pageSummary(page)}`)
+      }),
+  )
+
+  server.registerTool(
+    "input",
+    {
+      description:
+        "Raw mouse/keyboard at viewport CSS px (see screenshot): click(x,y,button?,count?) | move(x,y) | " +
+        "drag(x,y,to_x,to_y) | wheel(delta_y, delta_x?, x?, y?) | type(text, into focus) | key(key).",
+      inputSchema: {
+        action: z.enum(["click", "move", "drag", "wheel", "type", "key"]),
+        x: z.number().min(0).optional(),
+        y: z.number().min(0).optional(),
+        to_x: z.number().min(0).optional(),
+        to_y: z.number().min(0).optional(),
+        button: z.enum(["left", "right", "middle"]).optional(),
+        count: z.number().int().min(1).max(3).optional(),
+        delta_x: z.number().optional(),
+        delta_y: z.number().optional(),
+        text: z.string().optional(),
+        key: z.string().optional(),
+      },
+    },
+    (a) =>
+      guarded(async () => {
+        const { page } = requireActive()
+        const m = page.mouse
+        switch (a.action) {
+          case "click":
+            await m.click(need(a.x, "x"), need(a.y, "y"), {
+              button: a.button ?? "left",
+              clickCount: a.count ?? 1,
+            })
+            await settle(page)
+            return text(await pageSummary(requireActive().page))
+          case "move":
+            await m.move(need(a.x, "x"), need(a.y, "y"), { steps: 5 })
+            return text("moved")
+          case "drag":
+            await m.move(need(a.x, "x"), need(a.y, "y"))
+            await m.down()
+            await m.move(need(a.to_x, "to_x"), need(a.to_y, "to_y"), { steps: 15 })
+            await m.up()
+            return text("dragged")
+          case "wheel":
+            if (a.x !== undefined && a.y !== undefined) await m.move(a.x, a.y)
+            await m.wheel(a.delta_x ?? 0, a.delta_y ?? 0)
+            await page.waitForTimeout(200)
+            return text("scrolled")
+          case "type":
+            await page.keyboard.type(need(a.text, "text"), { delay: 20 })
+            return text("typed")
+          case "key":
+            await page.keyboard.press(need(a.key, "key"))
+            await settle(page)
+            return text(await pageSummary(requireActive().page))
         }
       }),
   )
 
-  // ---------- virtual mouse and keyboard ----------
-
   server.registerTool(
-    "mouse_click",
+    "page_log",
     {
       description:
-        "Click at viewport coordinates with a virtual mouse (use browser_screenshot to find them).",
+        "Recent console messages, page errors, failed/4xx/5xx requests and dialogs (alert/confirm/prompt). " +
+        "dialog sets how future dialogs are answered (default dismiss).",
       inputSchema: {
-        ...point,
-        button: z.enum(["left", "right", "middle"]).optional(),
-        click_count: z.number().int().min(1).max(3).optional().describe("2 for double click"),
+        kinds: z.array(z.enum(["console", "error", "request", "dialog"])).optional(),
+        limit: z.number().int().min(1).max(300).optional(),
+        clear: z.boolean().optional(),
+        dialog: z.enum(["accept", "dismiss"]).optional(),
+        prompt_text: z.string().optional().describe("Answer for prompt() when accepting"),
       },
     },
-    ({ x, y, button, click_count }) =>
+    (a) =>
       guarded(async () => {
-        const { page } = requireActive()
-        await page.mouse.click(x, y, { button: button ?? "left", clickCount: click_count ?? 1 })
-        await settle(page)
-        return text(`clicked (${x}, ${y})\n${await pageSummary(requireActive().page)}`)
+        if (a.dialog) setDialogPolicy(a.dialog, a.prompt_text)
+        const log = readLog({
+          kinds: a.kinds as LogKind[] | undefined,
+          limit: a.limit ?? 50,
+          clear: a.clear ?? false,
+        })
+        return text(
+          `dialogs: ${getDialogPolicy().action}\n` +
+            log.map((e) => `${e.t} ${e.kind} ${e.text}`).join("\n"),
+        )
       }),
   )
 
-  server.registerTool(
-    "mouse_move",
-    { description: "Move the virtual mouse (hover) to viewport coordinates.", inputSchema: point },
-    ({ x, y }) =>
-      guarded(async () => {
-        const { page } = requireActive()
-        await page.mouse.move(x, y, { steps: 5 })
-        return text(`moved to (${x}, ${y})`)
-      }),
-  )
+  // ---------- files, bookmarks, history ----------
 
   server.registerTool(
-    "mouse_drag",
+    "files",
     {
       description:
-        "Press at one point, move to another and release (drag and drop, sliders, selection).",
+        "Files: downloads (saved automatically when the browser downloads) and uploads (sent by the person " +
+        "from their computer via the dashboard). list(store?) | read(name: text as text, images as image) | " +
+        "delete(name). Put one into a page with act upload.",
       inputSchema: {
-        from_x: z.number().min(0),
-        from_y: z.number().min(0),
-        to_x: z.number().min(0),
-        to_y: z.number().min(0),
-        steps: z.number().int().min(1).max(100).optional(),
+        action: z.enum(["list", "read", "delete"]),
+        store: z
+          .enum(["upload", "download"])
+          .optional()
+          .describe("Default: both for list, download for read/delete"),
+        name: z.string().optional().describe("File name or part of it (newest match)"),
       },
     },
-    ({ from_x, from_y, to_x, to_y, steps }) =>
+    (a) =>
       guarded(async () => {
-        const { page } = requireActive()
-        await page.mouse.move(from_x, from_y)
-        await page.mouse.down()
-        await page.mouse.move(to_x, to_y, { steps: steps ?? 15 })
-        await page.mouse.up()
-        return text(`dragged (${from_x}, ${from_y}) → (${to_x}, ${to_y})`)
+        if (a.action === "list")
+          return json({
+            files: (await listFiles(a.store)).slice(0, 100),
+            downloading: pendingDownloads(),
+            file_chooser_open: pendingChooser(),
+          })
+        const store: Store = a.store ?? "download"
+        if (a.action === "delete")
+          return text(`deleted ${await deleteStored(store, need(a.name, "name"))}`)
+        const { file, data } = await readStored(store, need(a.name, "name"))
+        const mime = mimeOf(file.name)
+        if (mime.startsWith("image/"))
+          return {
+            content: [
+              { type: "text", text: file.name },
+              { type: "image", data: data.toString("base64"), mimeType: mime },
+            ],
+          }
+        if (
+          /^text\/|json|csv|xml|javascript/.test(mime) ||
+          /\.(md|log|tsv|yaml|yml)$/i.test(file.name)
+        )
+          return text(`${file.name}\n\n${clip(data.toString("utf8"), 100_000)}`)
+        return json({ ...file, mime, url: `/files/${store}/${encodeURIComponent(file.name)}` })
       }),
   )
 
   server.registerTool(
-    "mouse_wheel",
+    "bookmarks",
     {
-      description: "Scroll with the mouse wheel, optionally after moving to a point first.",
+      description:
+        "Chromium bookmarks of the open profile. list(query?) | add(title, url, folder?) | " +
+        'update(id, title?, url?, folder?, index?) | delete(id, folders recursively) | open(id). folder is a path like "Bookmarks bar/News" (created if missing) or an id.',
       inputSchema: {
-        delta_y: z.number().describe("Positive scrolls down"),
-        delta_x: z.number().optional(),
-        x: z.number().min(0).optional(),
-        y: z.number().min(0).optional(),
+        action: z.enum(["list", "add", "update", "delete", "open"]),
+        id: z.string().optional(),
+        query: z.string().optional(),
+        title: z.string().optional(),
+        url: z.string().optional(),
+        folder: z.string().optional(),
+        index: z.number().int().min(0).optional(),
       },
     },
-    ({ delta_x, delta_y, x, y }) =>
+    (a) =>
       guarded(async () => {
-        const { page } = requireActive()
-        if (x !== undefined && y !== undefined) await page.mouse.move(x, y)
-        await page.mouse.wheel(delta_x ?? 0, delta_y)
-        await page.waitForTimeout(200)
-        return text("scrolled")
+        switch (a.action) {
+          case "list":
+            return json(await listBookmarks(a.query))
+          case "add":
+            return json(
+              await addBookmark({ title: need(a.title, "title"), url: a.url, folder: a.folder }),
+            )
+          case "update":
+            return json(await updateBookmark(need(a.id, "id"), a))
+          case "delete":
+            await deleteBookmark(need(a.id, "id"))
+            return text("deleted")
+          case "open": {
+            const hit = (await listBookmarks()).find((b) => b.id === a.id)
+            if (!hit?.url) throw new Error(`No bookmark with id ${a.id}`)
+            const { page } = requireActive()
+            await page.goto(hit.url)
+            return text(await pageSummary(page))
+          }
+        }
       }),
   )
 
   server.registerTool(
-    "keyboard_type",
+    "history",
     {
-      description: "Type text into whatever has focus (after mouse_click on a field).",
-      inputSchema: { text: z.string(), delay_ms: z.number().int().min(0).max(500).optional() },
+      description: "Browsing history (Chromium) of the open or given profile, newest first.",
+      inputSchema: {
+        query: z.string().optional().describe("Text in URL or title"),
+        profile: z.string().optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
     },
-    ({ text: value, delay_ms }) =>
+    (a) =>
       guarded(async () => {
-        const { page } = requireActive()
-        await page.keyboard.type(value, { delay: delay_ms ?? 20 })
-        return text("typed")
+        const id = a.profile ? (await findProfile(a.profile)).id : requireActive().profileId
+        return json(await readHistory(id, { query: a.query, limit: a.limit ?? 30 }))
       }),
   )
 
   // ---------- profiles ----------
 
   server.registerTool(
-    "profiles_list",
-    { description: "List browser profiles (each keeps its own logins)." },
-    () =>
-      guarded(async () => {
-        const open = current()?.profileId
-        const items = await listProfiles()
-        return json(
-          items.map((p) => ({
-            id: p.id,
-            name: p.name,
-            notes: p.notes,
-            open: p.id === open,
-            engine: p.engine || "chromium",
-            device: p.device || "desktop",
-            locale: p.locale || "ko-KR",
-            timezone: p.timezone || null,
-            color_scheme: p.color_scheme || null,
-            stealth: p.stealth,
-            proxy: p.proxy || null,
-          })),
-        )
-      }),
-  )
-
-  const profileFields = {
-    notes: z.string().max(2000).optional(),
-    engine: z.enum(["chromium", "firefox", "webkit"]).optional().describe("Browser engine"),
-    device: z.enum(["desktop", "mobile"]).optional(),
-    locale: z.string().optional().describe("e.g. ko-KR"),
-    timezone: z.string().optional().describe("e.g. Asia/Seoul"),
-    color_scheme: z.enum(["light", "dark", ""]).optional(),
-    stealth: z.boolean().optional().describe("Hide automation flags (Chromium), helps with logins"),
-    proxy: z.string().optional().describe("http://host:port or socks5://host:port, empty for none"),
-  }
-
-  server.registerTool(
-    "profile_create",
+    "profiles",
     {
       description:
-        "Create a profile. Log in to sites inside it once (remote view or browser_* tools) and it stays logged in.",
-      inputSchema: { name: z.string().min(1).max(100), ...profileFields },
-    },
-    (input) => guarded(async () => json(await createProfile(input))),
-  )
-
-  server.registerTool(
-    "profile_update",
-    {
-      description:
-        "Change a profile's name, notes or browser settings. An open profile is reopened to apply them. " +
-        "Switching engine starts that engine logged out (logins are stored per engine).",
+        "Browser profiles (each keeps its own logins). list | create(name, settings) | update(profile, " +
+        "settings; reopens an open profile; switching engine starts logged out) | delete(profile) | " +
+        "cookies(profile, domain?, details?: login state per site, never cookie values).",
       inputSchema: {
-        profile: z.string(),
+        action: z.enum(["list", "create", "update", "delete", "cookies"]),
+        profile: z.string().optional().describe("Id or name"),
         name: z.string().min(1).max(100).optional(),
-        ...profileFields,
+        notes: z.string().max(2000).optional(),
+        engine: z.enum(["chromium", "firefox", "webkit"]).optional(),
+        device: z.enum(["desktop", "mobile"]).optional(),
+        locale: z.string().optional().describe("e.g. ko-KR"),
+        timezone: z.string().optional().describe("e.g. Asia/Seoul"),
+        color_scheme: z.enum(["light", "dark", ""]).optional(),
+        stealth: z.boolean().optional().describe("Hide automation flags (Chromium)"),
+        proxy: z.string().optional().describe("http://host:port or socks5://..., empty for none"),
+        domain: z.string().optional(),
+        details: z.boolean().optional(),
       },
     },
-    ({ profile, ...input }) => guarded(async () => json(await updateProfile(profile, input))),
-  )
-
-  server.registerTool(
-    "profile_delete",
-    {
-      description: "Delete a profile and its jobs. The saved browser data stays on disk.",
-      inputSchema: { profile: z.string() },
-    },
-    ({ profile }) =>
+    ({ action, profile, domain, details, ...input }) =>
       guarded(async () => {
-        const record = await findProfile(profile)
-        await deleteProfile(record.id)
-        return text(`deleted profile "${record.name}"`)
+        switch (action) {
+          case "list": {
+            const open = current()?.profileId
+            return json(
+              (await listProfiles()).map((p) => ({
+                id: p.id,
+                name: p.name,
+                notes: p.notes || undefined,
+                open: p.id === open || undefined,
+                engine: p.engine || "chromium",
+                device: p.device || "desktop",
+                locale: p.locale || undefined,
+                timezone: p.timezone || undefined,
+                color_scheme: p.color_scheme || undefined,
+                stealth: p.stealth,
+                proxy: p.proxy || undefined,
+              })),
+            )
+          }
+          case "create":
+            return json(await createProfile({ ...input, name: need(input.name, "name") }))
+          case "update":
+            return json(await updateProfile(need(profile, "profile"), input))
+          case "delete": {
+            const record = await findProfile(need(profile, "profile"))
+            await deleteProfile(record.id)
+            return text(`deleted profile "${record.name}"`)
+          }
+          case "cookies": {
+            const record = await findProfile(need(profile, "profile"))
+            const data = await profileCookies(record)
+            const sites = summarize(data.cookies).filter(
+              (g) => !domain || g.domain.includes(domain),
+            )
+            return json({
+              profile: record.name,
+              source: data.source,
+              sites: sites.map((g) => ({
+                site: g.domain,
+                status: g.status,
+                login: g.login,
+                total: g.total,
+                expired: g.expired || undefined,
+                expiry: iso(g.latestExpiry),
+                ...(details
+                  ? {
+                      cookies: g.cookies.map((c) => ({
+                        name: c.name,
+                        login: c.loginLike || undefined,
+                        status: c.status,
+                        expires: iso(c.expires),
+                      })),
+                    }
+                  : {}),
+              })),
+            })
+          }
+        }
       }),
   )
 
+  // ---------- jobs, runs, collected data ----------
+
   server.registerTool(
-    "profile_cookies",
+    "jobs",
     {
       description:
-        "Which sites a profile is logged in to: cookies grouped by site with login-like names, status " +
-        "(valid, expiring within 3 days, expired, session) and expiry. Cookie values are never returned.",
+        "Saved automations / crawls run on cron. list | get(job) | create(name, profile, steps, schedule?, " +
+        "enabled?) | update(job, any field) | delete(job, with runs and data) | run(job: start now, then runs get).",
       inputSchema: {
-        profile: z.string(),
-        domain: z.string().optional().describe("Only sites containing this text"),
-        details: z.boolean().optional().describe("Include each cookie's name, status and expiry"),
+        action: z.enum(["list", "get", "create", "update", "delete", "run"]),
+        job: z.string().optional().describe("Id or name"),
+        name: z.string().min(1).max(100).optional(),
+        profile: z.string().optional(),
+        steps: z
+          .array(z.record(z.string(), z.unknown()))
+          .optional()
+          .describe(
+            `Actions: goto, click, fill, press, wait, waitFor, text, screenshot, scroll, extract (saves rows). E.g. ${STEP_HELP}`,
+          ),
+        schedule: z.string().optional().describe('Cron in the server time zone, "" for none'),
+        enabled: z.boolean().optional(),
       },
     },
-    ({ profile, domain, details }) =>
+    ({ action, job, ...input }) =>
       guarded(async () => {
-        const record = await findProfile(profile)
-        const data = await profileCookies(record)
-        const sites = summarize(data.cookies).filter((g) => !domain || g.domain.includes(domain))
-        return json({
-          profile: record.name,
-          source: data.source,
-          sites: sites.map((g) => ({
-            site: g.domain,
-            status: g.status,
-            login_cookies: g.login,
-            total: g.total,
-            expired: g.expired,
-            latest_expiry: g.latestExpiry ? new Date(g.latestExpiry * 1000).toISOString() : null,
-            ...(details
-              ? {
-                  cookies: g.cookies.map((c) => ({
-                    name: c.name,
-                    login_like: c.loginLike,
-                    status: c.status,
-                    expires: c.expires ? new Date(c.expires * 1000).toISOString() : null,
-                  })),
-                }
-              : {}),
-          })),
+        const withNext = <T extends { id: string }>(j: T) => ({
+          ...j,
+          next_run: nextRun(j.id)?.toISOString() ?? null,
         })
+        switch (action) {
+          case "list":
+            return json(
+              (await listJobs()).map((j) => ({
+                id: j.id,
+                name: j.name,
+                profile: j.profileName,
+                schedule: j.schedule || undefined,
+                enabled: j.enabled,
+                next_run: nextRun(j.id)?.toISOString() ?? undefined,
+              })),
+            )
+          case "get":
+            return json(withNext(await findJob(need(job, "job"))))
+          case "create":
+            return json(
+              await createJob({
+                ...input,
+                name: need(input.name, "name"),
+                profile: need(input.profile, "profile"),
+                steps: need(input.steps, "steps"),
+              }),
+            )
+          case "update":
+            return json(withNext(await updateJob(need(job, "job"), input)))
+          case "delete":
+            await deleteJob(need(job, "job"))
+            return text("deleted")
+          case "run": {
+            const record = await findJob(need(job, "job"))
+            const run = await startRun(record.id, "mcp")
+            return json({ run: run.id, job: record.name, status: run.status })
+          }
+        }
       }),
   )
 
-  // ---------- jobs ----------
-
   server.registerTool(
-    "jobs_list",
-    { description: "List jobs with their schedule and next run." },
-    () =>
-      guarded(async () => {
-        const jobs = await listJobs()
-        return json(
-          jobs.map((j) => ({
-            id: j.id,
-            name: j.name,
-            profile: j.profileName,
-            schedule: j.schedule,
-            enabled: j.enabled,
-            next_run: nextRun(j.id)?.toISOString() ?? null,
-          })),
-        )
-      }),
-  )
-
-  server.registerTool(
-    "job_get",
-    { description: "A job with its steps.", inputSchema: { job: z.string() } },
-    ({ job }) =>
-      guarded(async () => {
-        const record = await findJob(job)
-        return json({ ...record, next_run: nextRun(record.id)?.toISOString() ?? null })
-      }),
-  )
-
-  const jobFields = {
-    profile: z.string().describe("Profile id or name"),
-    steps: z
-      .array(z.record(z.string(), z.unknown()))
-      .describe(
-        `Steps run in order. Actions: goto, click, fill, press, wait, waitFor, text, screenshot, scroll, extract. Example: ${STEP_HELP}`,
-      ),
-    schedule: z
-      .string()
-      .describe(
-        'Cron expression evaluated in the server time zone, e.g. "0 9 * * *". Empty for none.',
-      ),
-    enabled: z.boolean().describe("Whether the schedule is active"),
-  }
-
-  server.registerTool(
-    "job_create",
+    "runs",
     {
-      description: "Create an automation or crawl job. extract steps save rows to crawl_items.",
+      description: "Job runs. list(job?, limit?) | get(run: status and log lines).",
       inputSchema: {
-        name: z.string().min(1).max(100),
-        profile: jobFields.profile,
-        steps: jobFields.steps,
-        schedule: jobFields.schedule.optional(),
-        enabled: jobFields.enabled.optional(),
-      },
-    },
-    (input) => guarded(async () => json(await createJob(input))),
-  )
-
-  server.registerTool(
-    "job_update",
-    {
-      description:
-        "Change a job: rename, move profile, replace steps, set or clear the cron schedule, enable or disable.",
-      inputSchema: {
-        job: z.string(),
-        name: z.string().min(1).max(100).optional(),
-        profile: jobFields.profile.optional(),
-        steps: jobFields.steps.optional(),
-        schedule: jobFields.schedule.optional(),
-        enabled: jobFields.enabled.optional(),
-      },
-    },
-    ({ job, ...input }) =>
-      guarded(async () => {
-        const updated = await updateJob(job, input)
-        return json({ ...updated, next_run: nextRun(updated.id)?.toISOString() ?? null })
-      }),
-  )
-
-  server.registerTool(
-    "job_delete",
-    {
-      description: "Delete a job with its runs, logs and crawled data.",
-      inputSchema: { job: z.string() },
-    },
-    ({ job }) =>
-      guarded(async () => {
-        await deleteJob(job)
-        return text("deleted")
-      }),
-  )
-
-  server.registerTool(
-    "job_run",
-    {
-      description: "Run a job now. Returns the run id; poll run_get for progress.",
-      inputSchema: { job: z.string() },
-    },
-    ({ job }) =>
-      guarded(async () => {
-        const record = await findJob(job)
-        const run = await startRun(record.id, "mcp")
-        return json({ run: run.id, job: record.name, status: run.status })
-      }),
-  )
-
-  server.registerTool(
-    "runs_list",
-    {
-      description: "Recent runs, optionally for one job.",
-      inputSchema: {
+        action: z.enum(["list", "get"]),
         job: z.string().optional(),
+        run: z.string().optional(),
         limit: z.number().int().min(1).max(200).optional(),
       },
     },
-    ({ job, limit }) =>
+    (a) =>
       guarded(async () => {
-        const jobId = job ? (await findJob(job)).id : undefined
-        const runs = await listRuns({ jobId, limit: limit ?? 20 })
-        return json(
-          runs.map((r) => ({
-            id: r.id,
-            job: r.jobName,
-            status: r.status,
-            trigger: r.trigger,
-            items: r.items,
-            started: r.started,
-            finished: r.finished,
-            error: r.error,
-          })),
-        )
-      }),
-  )
-
-  server.registerTool(
-    "run_get",
-    { description: "A run's status and its log lines.", inputSchema: { run: z.string() } },
-    ({ run }) =>
-      guarded(async () => {
+        if (a.action === "list") {
+          const jobId = a.job ? (await findJob(a.job)).id : undefined
+          return json(
+            (await listRuns({ jobId, limit: a.limit ?? 20 })).map((r) => ({
+              id: r.id,
+              job: r.jobName,
+              status: r.status,
+              trigger: r.trigger,
+              items: r.items,
+              started: r.started,
+              finished: r.finished || undefined,
+              error: r.error || undefined,
+            })),
+          )
+        }
+        const run = need(a.run, "run")
         await ensureSuperuser()
         const record = await pb.collection("job_runs").getOne<JobRun>(run)
         const logs = await pb
           .collection("job_logs")
           .getFullList<JobLog>({ filter: pb.filter("run = {:run}", { run }), sort: "created" })
         return text(
-          `status: ${record.status}  items: ${record.items}  trigger: ${record.trigger}\n` +
+          `status: ${record.status} items: ${record.items} trigger: ${record.trigger}\n` +
             (record.error ? `error: ${record.error}\n` : "") +
             logs
               .map(
@@ -712,226 +890,163 @@ export function buildMcpServer(): McpServer {
       }),
   )
 
-  // ---------- crawled data ----------
-
   server.registerTool(
-    "crawl_items",
+    "crawl_data",
     {
-      description: "Collected rows of a job (newest first), optionally from one run.",
+      description:
+        "Rows saved by a job's extract steps. items(job, run?, limit?, offset?: newest first) | csv(job, run?: " +
+        "whole set; the dashboard serves it at /jobs/<id>/items.csv).",
       inputSchema: {
+        action: z.enum(["items", "csv"]),
         job: z.string(),
         run: z.string().optional(),
         limit: z.number().int().min(1).max(500).optional(),
         offset: z.number().int().min(0).optional(),
       },
     },
-    ({ job, run, limit, offset }) =>
+    (a) =>
       guarded(async () => {
-        const record = await findJob(job)
-        const res = await listItems(record.id, {
-          runId: run,
-          limit: limit ?? 50,
-          offset: offset ?? 0,
-        })
-        return json({
-          total: res.total,
-          items: res.items.map((i) => ({ ...i.data, _run: i.run, _collected_at: i.created })),
-        })
-      }),
-  )
-
-  server.registerTool(
-    "crawl_csv",
-    {
-      description:
-        "All collected rows of a job as CSV text (first column collected_at). The dashboard serves the same file at /jobs/<id>/items.csv.",
-      inputSchema: { job: z.string(), run: z.string().optional() },
-    },
-    ({ job, run }) =>
-      guarded(async () => {
-        const record = await findJob(job)
-        const csv = toCsv(await allItems(record.id, run)).replace(/^﻿/, "")
-        const note = `download: /jobs/${record.id}/items.csv${run ? `?run=${run}` : ""}\n\n`
+        const record = await findJob(a.job)
+        if (a.action === "items") {
+          const res = await listItems(record.id, {
+            runId: a.run,
+            limit: a.limit ?? 50,
+            offset: a.offset ?? 0,
+          })
+          return json({
+            total: res.total,
+            items: res.items.map((i) => ({ ...i.data, _run: i.run, _at: i.created })),
+          })
+        }
+        const csv = toCsv(await allItems(record.id, a.run)).replace(/^﻿/, "")
         return text(
-          csv.length > MAX_CSV_CHARS
-            ? `${note}${csv.slice(0, MAX_CSV_CHARS)}\n... truncated, use the download URL for the full file`
-            : `${note}${csv}`,
+          clip(
+            `download: /jobs/${record.id}/items.csv${a.run ? `?run=${a.run}` : ""}\n\n${csv}`,
+            1_000_000,
+          ),
         )
       }),
   )
 
-  // ---------- docs (markdown notes, same as the dashboard's 문서 page) ----------
+  // ---------- docs and images (the dashboard's 문서 and 이미지 pages) ----------
 
   server.registerTool(
-    "docs_list",
+    "docs",
     {
       description:
-        "List markdown notes (title, tags, updated). Notes link with [[Title]], embed images with ![[image title]] and use #tags.",
+        "Markdown notes ([[Title]] links, ![[image title]] embeds, #tags). list(query?, tag?) | read(doc) | " +
+        "write(title, body, doc?: create, replace or rename) | append(doc, body; creates if missing) | delete(doc).",
       inputSchema: {
-        query: z.string().optional().describe("Search in titles and bodies"),
-        tag: z.string().optional().describe("Only notes with this #tag (without #)"),
+        action: z.enum(["list", "read", "write", "append", "delete"]),
+        doc: z.string().optional().describe("Title or id"),
+        title: z.string().min(1).max(200).optional(),
+        body: z.string().max(1_000_000).optional(),
+        query: z.string().optional(),
+        tag: z.string().optional(),
       },
     },
-    ({ query, tag }) =>
+    (a) =>
       guarded(async () => {
-        const docs = await listDocs({ q: query, tag })
-        return json({
-          docs: docs.map((d) => ({ title: d.title, tags: d.tags ?? [], updated: d.updated })),
-          tags: await allTags(),
-        })
-      }),
-  )
-
-  server.registerTool(
-    "doc_read",
-    {
-      description:
-        "Read a note's markdown, with the notes it links to and the notes linking to it.",
-      inputSchema: { doc: z.string().describe("Title or id") },
-    },
-    ({ doc }) =>
-      guarded(async () => {
-        const d = await getDoc(doc)
-        return json({
-          title: d.title,
-          tags: d.tags ?? [],
-          updated: d.updated,
-          links: wikiTargets(d.body),
-          backlinks: (await backlinks(d.title)).map((b) => b.title),
-          body: d.body,
-        })
-      }),
-  )
-
-  server.registerTool(
-    "doc_write",
-    {
-      description:
-        "Create a note, or replace the whole body of an existing one (matched by title, or by `doc` to rename). Tags are taken from #tags in the body.",
-      inputSchema: {
-        title: z.string().min(1).max(200),
-        body: z.string().max(1_000_000),
-        doc: z.string().optional().describe("Existing note (title or id) to overwrite or rename"),
-      },
-    },
-    ({ title, body, doc }) =>
-      guarded(async () => {
-        const saved = await saveDoc({ ref: doc, title, body })
-        return text(
-          `saved "${saved.title}" (${saved.id}): /docs/t/${encodeURIComponent(saved.title)}`,
-        )
-      }),
-  )
-
-  server.registerTool(
-    "doc_append",
-    {
-      description: "Append markdown to the end of a note, creating it when it does not exist.",
-      inputSchema: { doc: z.string().describe("Title or id"), text: z.string().max(200_000) },
-    },
-    ({ doc, text: more }) =>
-      guarded(async () => {
-        const saved = await appendDoc(doc, more)
-        return text(`appended to "${saved.title}" (${saved.id})`)
-      }),
-  )
-
-  server.registerTool(
-    "doc_delete",
-    { description: "Delete a note.", inputSchema: { doc: z.string().describe("Title or id") } },
-    ({ doc }) =>
-      guarded(async () => {
-        await deleteDoc(doc)
-        return text(`deleted ${doc}`)
-      }),
-  )
-
-  // ---------- images (same as the dashboard's 이미지 page) ----------
-
-  server.registerTool(
-    "image_capture",
-    {
-      description:
-        "Screenshot the open page and store it as an image (embeddable in notes as ![[title]]).",
-      inputSchema: {
-        title: z.string().max(200).optional().describe("Defaults to the page title"),
-        full_page: z.boolean().optional(),
-      },
-    },
-    ({ title, full_page }) =>
-      guarded(async () => {
-        const { page } = requireActive()
-        const image = await captureImage(page, {
-          title,
-          source: "mcp",
-          fullPage: full_page ?? false,
-        })
-        return json({
-          id: image.id,
-          title: image.title,
-          page_url: image.page_url,
-          embed: `![[${image.title}]]`,
-        })
-      }),
-  )
-
-  server.registerTool(
-    "images_list",
-    {
-      description: "List stored images, newest first.",
-      inputSchema: {
-        limit: z.number().int().min(1).max(500).optional(),
-        job: z.string().optional().describe("Only screenshots saved by this job id"),
-      },
-    },
-    ({ limit, job }) =>
-      guarded(async () => {
-        const images = await listImages({ limit: limit ?? 50, job })
-        return json(
-          images.map((i) => ({
-            id: i.id,
-            title: i.title,
-            source: i.source,
-            page_url: i.page_url || undefined,
-            job: i.job || undefined,
-            created: i.created,
-          })),
-        )
-      }),
-  )
-
-  server.registerTool(
-    "image_get",
-    {
-      description: "Return a stored image (by id or title) so it can be looked at.",
-      inputSchema: { image: z.string().describe("Id or title") },
-    },
-    ({ image }) =>
-      guarded(async () => {
-        const record = await findImage(image)
-        if (!record) throw new Error(`Image not found: ${image}`)
-        const res = await imageFile(record)
-        if (!res.ok) throw new Error(`Could not read the image (${res.status})`)
-        const data = Buffer.from(await res.arrayBuffer()).toString("base64")
-        return {
-          content: [
-            { type: "text", text: `${record.title} (${record.id}) ${record.page_url}`.trim() },
-            { type: "image", data, mimeType: res.headers.get("content-type") ?? "image/png" },
-          ],
+        switch (a.action) {
+          case "list": {
+            const docs = await listDocs({ q: a.query, tag: a.tag })
+            return json({
+              docs: docs.map((d) => ({
+                title: d.title,
+                tags: d.tags?.length ? d.tags : undefined,
+                updated: d.updated,
+              })),
+              tags: await allTags(),
+            })
+          }
+          case "read": {
+            const d = await getDoc(need(a.doc, "doc"))
+            const links = wikiTargets(d.body)
+            const back = (await backlinks(d.title)).map((b) => b.title)
+            return text(
+              `# ${d.title}\nupdated ${d.updated}` +
+                (d.tags?.length ? ` tags ${d.tags.join(",")}` : "") +
+                (links.length ? `\nlinks: ${links.join(", ")}` : "") +
+                (back.length ? `\nbacklinks: ${back.join(", ")}` : "") +
+                `\n\n${d.body}`,
+            )
+          }
+          case "write": {
+            const saved = await saveDoc({
+              ref: a.doc,
+              title: need(a.title, "title"),
+              body: a.body ?? "",
+            })
+            return text(`saved "${saved.title}" (${saved.id})`)
+          }
+          case "append": {
+            const saved = await appendDoc(need(a.doc, "doc"), need(a.body, "body"))
+            return text(`appended to "${saved.title}"`)
+          }
+          case "delete":
+            await deleteDoc(need(a.doc, "doc"))
+            return text("deleted")
         }
       }),
   )
 
   server.registerTool(
-    "image_delete",
+    "images",
     {
-      description: "Delete a stored image.",
-      inputSchema: { image: z.string().describe("Id or title") },
+      description:
+        "Stored images (embed in notes as ![[title]]). list(limit?, job?) | get(image) | " +
+        "capture(title?, full_page?: screenshot of the open page saved here) | delete(image).",
+      inputSchema: {
+        action: z.enum(["list", "get", "capture", "delete"]),
+        image: z.string().optional().describe("Id or title"),
+        title: z.string().max(200).optional(),
+        full_page: z.boolean().optional(),
+        job: z.string().optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
     },
-    ({ image }) =>
+    (a) =>
       guarded(async () => {
-        await deleteImage(image)
-        return text(`deleted ${image}`)
+        switch (a.action) {
+          case "list":
+            return json(
+              (await listImages({ limit: a.limit ?? 50, job: a.job })).map((i) => ({
+                id: i.id,
+                title: i.title,
+                source: i.source,
+                page_url: i.page_url || undefined,
+                job: i.job || undefined,
+                created: i.created,
+              })),
+            )
+          case "capture": {
+            const image = await captureImage(requireActive().page, {
+              title: a.title,
+              source: "mcp",
+              fullPage: a.full_page ?? false,
+            })
+            return json({ id: image.id, title: image.title, embed: `![[${image.title}]]` })
+          }
+          case "get": {
+            const record = await findImage(need(a.image, "image"))
+            if (!record) throw new Error(`Image not found: ${a.image}`)
+            const res = await imageFile(record)
+            if (!res.ok) throw new Error(`Could not read the image (${res.status})`)
+            return {
+              content: [
+                { type: "text", text: `${record.title} (${record.id}) ${record.page_url}`.trim() },
+                {
+                  type: "image",
+                  data: Buffer.from(await res.arrayBuffer()).toString("base64"),
+                  mimeType: res.headers.get("content-type") ?? "image/png",
+                },
+              ],
+            }
+          }
+          case "delete":
+            await deleteImage(need(a.image, "image"))
+            return text("deleted")
+        }
       }),
   )
 

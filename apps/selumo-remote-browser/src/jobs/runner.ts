@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events"
 import type { Page } from "playwright"
-import { checkChallenge, waitForHuman } from "../browser/challenge.js"
+import { checkChallenge } from "../browser/challenge.js"
+import { askHuman } from "../browser/help.js"
+import { detectLogin } from "../browser/login.js"
 import { openProfile, requireActive } from "../browser/manager.js"
 import { env } from "../env.js"
 import { captureImage } from "../images.js"
@@ -152,6 +154,35 @@ async function runStep(step: Step, ctx: StepContext): Promise<string | null> {
   }
 }
 
+async function pauseForPerson(step: Step, runId: string, job: Job): Promise<void> {
+  const page = requireActive().page
+  const challenge = await checkChallenge(page).catch(() => null)
+  // A goto that lands on a login page means the profile is logged out. Other steps may be the
+  // job filling a login form on purpose, so only goto counts.
+  const login =
+    !challenge && step.action === "goto" ? await detectLogin(page).catch(() => null) : null
+  if (!challenge && !login) return
+  const minutes = env.CHALLENGE_WAIT_MINUTES
+  const kind = challenge ? "captcha" : "login"
+  const what = challenge ? `bot check: ${challenge.kind}` : `login needed: ${login!.site}`
+  await log(
+    runId,
+    "error",
+    `${what}. 대시보드 원격 화면에서 직접 처리해 주세요 (최대 ${minutes}분 대기)`,
+  )
+  const outcome = await askHuman(() => requireActive().page, {
+    kind,
+    message: `작업 "${job.name}": ${what}`,
+    from: `job ${job.name}`,
+    timeoutMs: minutes * 60_000,
+  })
+  if (outcome !== "done")
+    throw new Error(
+      `${what} (${outcome === "cancelled" ? "cancelled" : `not handled within ${minutes} min`})`,
+    )
+  await log(runId, "info", `${kind === "login" ? "logged in" : "bot check cleared"}, continuing`)
+}
+
 async function execute(job: Job, runId: string, profile: Profile, steps: Step[]): Promise<void> {
   let status: JobRun["status"] = "success"
   const ctx: StepContext = { page: undefined as unknown as Page, job, runId, index: 0, items: 0 }
@@ -164,21 +195,10 @@ async function execute(job: Job, runId: string, profile: Profile, steps: Step[])
       await log(runId, "info", `#${index + 1} ${describeStep(step)}`)
       const result = await runStep(step, ctx)
       if (result) await log(runId, "info", result)
-      // A bot check pauses the run until a person clears it in the remote screen.
+      // A bot check, or being sent to a login page, pauses the run until a person deals with it
+      // in the remote view (dashboard banner, NOTIFY_URL message).
       if (["goto", "click", "press", "fill"].includes(step.action)) {
-        const challenge = await checkChallenge(browser.page).catch(() => null)
-        if (challenge) {
-          const minutes = env.CHALLENGE_WAIT_MINUTES
-          await log(
-            runId,
-            "error",
-            `bot check: ${challenge.kind}. 대시보드 원격 화면에서 직접 해결해 주세요 (최대 ${minutes}분 대기)`,
-          )
-          const cleared = await waitForHuman(() => requireActive().page, minutes * 60_000)
-          if (!cleared)
-            throw new Error(`bot check not cleared within ${minutes} min: ${challenge.kind}`)
-          await log(runId, "info", "bot check cleared, continuing")
-        }
+        await pauseForPerson(step, runId, job)
       }
     }
     await log(runId, "info", `done, ${ctx.items} item(s) collected`)

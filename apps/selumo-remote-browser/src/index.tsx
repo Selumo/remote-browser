@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises"
 import type { IncomingMessage } from "node:http"
 import net from "node:net"
 import path from "node:path"
@@ -35,7 +36,22 @@ import { captureImage, deleteImage, findImage, imageFile, listImages, saveImage 
 import { allItems, columnsOf, listItems, toCsv } from "./jobs/crawl.js"
 import { runEvents, runningRunId, startRun, type RunEvent } from "./jobs/runner.js"
 import { nextRun, startScheduler } from "./jobs/scheduler.js"
-import { buildMcpServer, currentHandoff } from "./mcp.js"
+import { buildMcpServer } from "./mcp.js"
+import { answerHelp, currentHelp } from "./browser/help.js"
+import { detectLogin } from "./browser/login.js"
+import { addBookmark, deleteBookmark, listBookmarks, type Bookmark } from "./browser/bookmarks.js"
+import {
+  cancelChooser,
+  deleteStored,
+  fillChooser,
+  filePath,
+  listFiles,
+  mimeOf,
+  originalName,
+  pendingChooser,
+  saveUpload,
+  type Store,
+} from "./browser/files.js"
 import { checkChallenge } from "./browser/challenge.js"
 import {
   ensureAdminUser,
@@ -213,15 +229,26 @@ app.get("/", requireUser, async (c) => {
 app.get("/partials/status", requireUser, async (c) => {
   const page = current()?.page
   const challenge = page ? await checkChallenge(page).catch(() => null) : null
+  const login = page && !challenge ? await detectLogin(page).catch(() => null) : null
   return c.html(
     <BrowserStatus
+      login={login}
       profile={await openProfileRecord()}
       url={page?.url() ?? null}
       running={runningRunId()}
       challenge={challenge}
-      handoff={currentHandoff()}
+      help={currentHelp()}
+      chooser={pendingChooser()}
     />,
   )
+})
+
+/** The banner's 완료 / 취소 buttons answer the request a person was asked for. */
+app.post("/help/:id/:outcome", requireUser, (c) => {
+  const outcome = c.req.param("outcome")
+  if (outcome !== "done" && outcome !== "cancelled") return c.text("bad outcome", 400)
+  answerHelp(c.req.param("id"), outcome)
+  return c.redirect("/partials/status", 303)
 })
 
 const profileList = async () => (
@@ -261,6 +288,14 @@ async function profilesPage(c: { get(key: "user"): string }, id?: string, error?
   const profiles = await listProfiles()
   const selected = (id ? profiles.find((p) => p.id === id) : profiles[0]) ?? null
   const data = selected ? await profileCookies(selected) : null
+  const open = current()
+  let bookmarks: Bookmark[] | string = "프로필을 열면 북마크를 보고 고칠 수 있어요."
+  if (selected && open?.profileId === selected.id) {
+    bookmarks =
+      open.engine === "chromium"
+        ? await listBookmarks().catch((e) => `북마크를 읽지 못했어요: ${message(e)}`)
+        : "북마크는 Chromium 프로필에서만 쓸 수 있어요."
+  }
   return (
     <ProfilesPage
       user={c.get("user")}
@@ -269,12 +304,40 @@ async function profilesPage(c: { get(key: "user"): string }, id?: string, error?
       selected={selected}
       source={data?.source ?? null}
       summary={data ? summarize(data.cookies) : []}
+      bookmarks={bookmarks}
       error={error}
     />
   )
 }
 
 app.get("/profiles", requireUser, async (c) => c.html(await profilesPage(c, c.req.query("id"))))
+
+app.post("/profiles/:id/bookmarks", requireUser, async (c) => {
+  const id = c.req.param("id")
+  const form = await c.req.formData()
+  try {
+    if (current()?.profileId !== id) throw new Error("프로필을 먼저 여세요")
+    await addBookmark({
+      title: formText(form, "title"),
+      url: new URL(formText(form, "url")).href,
+      folder: formText(form, "folder") || undefined,
+    })
+    return c.redirect(`/profiles?id=${id}`)
+  } catch (e) {
+    return c.html(await profilesPage(c, id, message(e)), 400)
+  }
+})
+
+app.post("/profiles/:id/bookmarks/:bid/delete", requireUser, async (c) => {
+  const id = c.req.param("id")
+  try {
+    if (current()?.profileId !== id) throw new Error("프로필을 먼저 여세요")
+    await deleteBookmark(c.req.param("bid"))
+    return c.redirect(`/profiles?id=${id}`)
+  } catch (e) {
+    return c.html(await profilesPage(c, id, message(e)), 400)
+  }
+})
 
 app.post("/profiles/:id/settings", requireUser, async (c) => {
   const id = c.req.param("id")
@@ -609,8 +672,59 @@ app.get("/data", requireUser, async (c) => {
       selected={selected}
       items={items}
       columns={columnsOf(items.map((i) => i.data ?? {}))}
+      files={await listFiles()}
     />,
   )
+})
+
+// ---- files: downloads from the remote browser, uploads from people's computers ----
+
+const isStore = (v: string): v is Store => v === "download" || v === "upload"
+const MAX_UPLOAD = 200 * 1024 * 1024
+
+app.get("/files/:store/:name", requireUser, async (c) => {
+  const store = c.req.param("store")
+  const name = c.req.param("name")
+  if (!isStore(store)) return c.text("Not found", 404)
+  const file = await readFile(filePath(store, name)).catch(() => null)
+  if (!file) return c.text("Not found", 404)
+  return c.body(new Uint8Array(file), 200, {
+    "content-type": mimeOf(name),
+    "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(originalName(name))}`,
+    "x-content-type-options": "nosniff",
+  })
+})
+
+app.post("/files/:store/:name/delete", requireUser, async (c) => {
+  const store = c.req.param("store")
+  if (isStore(store)) await deleteStored(store, c.req.param("name")).catch(() => undefined)
+  return c.redirect("/data#files")
+})
+
+/**
+ * Files from the person's computer. Saved under uploads (so the AI can use them too); when the
+ * remote page is waiting in a file chooser, they go straight into it.
+ */
+app.post("/files/upload", requireUser, async (c) => {
+  const form = await c.req.formData()
+  const files = form.getAll("file").filter((f): f is File => f instanceof File && f.size > 0)
+  if (!files.length) return c.json({ error: "파일을 골라 주세요" }, 400)
+  if (files.some((f) => f.size > MAX_UPLOAD))
+    return c.json({ error: "파일 하나당 200MB까지예요" }, 400)
+  const saved = []
+  const payloads = []
+  for (const f of files) {
+    const data = new Uint8Array(await f.arrayBuffer())
+    saved.push(await saveUpload(f.name, data))
+    payloads.push({ name: f.name, mimeType: f.type || mimeOf(f.name), buffer: Buffer.from(data) })
+  }
+  const filled = await fillChooser(payloads).catch(() => false)
+  return c.json({ saved: saved.map((f) => f.name), filled })
+})
+
+app.post("/files/chooser/cancel", requireUser, (c) => {
+  cancelChooser()
+  return c.redirect("/partials/status", 303)
 })
 
 // ---- images ----

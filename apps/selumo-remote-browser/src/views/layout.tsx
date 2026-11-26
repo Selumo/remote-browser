@@ -68,6 +68,11 @@ details.dom { border: 1px solid #000; margin-top: -1px; }
 details.dom > summary { display: grid; grid-template-columns: minmax(0, 2fr) 70px 70px 50px 60px 150px;
   gap: 8px; padding: 4px 8px; cursor: pointer; list-style: none; }
 tr.on td { background: #000; color: #fff; }
+/* A request for a person, shown in the status bar above the remote screen. */
+.help-request { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; width: 100%;
+  padding: 8px 10px; border: 2px solid #000; background: #000; color: #fff; }
+.help-request .muted { color: #ccc; }
+.help-request button { border-color: #fff; }
 tr.on td a { color: #fff; }
 h3 { font-size: 13px; margin: 16px 0 6px; }
 /* Markdown notes */

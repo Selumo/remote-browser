@@ -1,5 +1,6 @@
 import { raw } from "hono/html"
 import type { FC } from "hono/jsx"
+import type { StoredFile } from "../browser/files.js"
 import type { Doc } from "../docs.js"
 import { docHref } from "../docs.js"
 import type { ImageRecord } from "../images.js"
@@ -204,7 +205,8 @@ export const DataPage: FC<{
   selected: JobData | null
   items: CrawlItem[]
   columns: string[]
-}> = ({ user, jobs, selected, items, columns }) => (
+  files: StoredFile[]
+}> = ({ user, jobs, selected, items, columns, files }) => (
   <Layout title="데이터 · Remote Browser" user={user} section="data">
     <div class="grid">
       <section class="box">
@@ -270,6 +272,49 @@ export const DataPage: FC<{
           </>
         ) : (
           <p class="muted">왼쪽에서 작업을 고르세요.</p>
+        )}
+      </section>
+      <section class="box" id="files" style="grid-column: 1 / -1">
+        <h2>파일 {files.length}개</h2>
+        <p class="muted">
+          내려받음: 원격 브라우저가 다운로드한 파일. 올림: 브라우저 화면의 "파일 올리기"로 내 PC에서
+          보낸 파일. AI는 files 도구로 읽고 act upload로 페이지에 넣어요.
+        </p>
+        {files.length ? (
+          <table>
+            <tr>
+              <th style="width:80px">종류</th>
+              <th>파일</th>
+              <th style="width:100px">크기</th>
+              <th style="width:150px">저장</th>
+              <th style="width:60px" />
+            </tr>
+            {files.map((f) => (
+              <tr>
+                <td>{f.store === "upload" ? "올림" : "내려받음"}</td>
+                <td class="wrap">
+                  <a href={`/files/${f.store}/${encodeURIComponent(f.name)}`}>{f.name}</a>
+                </td>
+                <td>
+                  {f.size < 1024 * 1024
+                    ? `${Math.ceil(f.size / 1024)} KB`
+                    : `${(f.size / 1048576).toFixed(1)} MB`}
+                </td>
+                <td>{when(f.saved)}</td>
+                <td>
+                  <form
+                    method="post"
+                    action={`/files/${f.store}/${encodeURIComponent(f.name)}/delete`}
+                    onsubmit="return confirm('이 파일을 지울까요?')"
+                  >
+                    <button type="submit">삭제</button>
+                  </form>
+                </td>
+              </tr>
+            ))}
+          </table>
+        ) : (
+          <p class="muted">아직 파일이 없어요.</p>
         )}
       </section>
     </div>

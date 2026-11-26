@@ -33,22 +33,39 @@ docker run --rm -p 3000:3000 --shm-size 2g --env-file .env -v rb-data:/data selu
    ```
    단계: `goto`, `click`, `fill`, `press`, `wait`, `waitFor`, `text`, `screenshot`(이미지 메뉴에 저장), `scroll`, `extract`
 3. **문서:** 옵시디언처럼 마크다운 노트를 써요. `[[제목]]`으로 다른 노트를 링크하고(없는 제목은 누르면 새로 만들어요), `![[이미지 제목]]`으로 저장한 이미지를 넣고, `#태그`로 묶어요. 편집할 때 오른쪽에 미리보기가 바로 보이고, 노트마다 자기를 링크한 노트(백링크)가 나와요.
-4. **데이터:** 작업별 수집 건수를 한눈에 보고, 작업을 골라 최근 데이터를 표로 보거나 CSV로 받아요.
-5. **이미지:** 지금 원격 화면을 캡처하거나 파일을 올려서 저장해요. 작업의 `screenshot` 단계와 MCP `image_capture`로 찍은 것도 여기 모여요.
+4. **데이터:** 작업별 수집 건수를 한눈에 보고, 작업을 골라 최근 데이터를 표로 보거나 CSV로 받아요. 원격 브라우저가 내려받은 파일과 내 PC에서 올린 파일도 여기서 받거나 지울 수 있어요.
+5. **이미지:** 지금 원격 화면을 캡처하거나 파일을 올려서 저장해요. 작업의 `screenshot` 단계와 MCP `images`(capture)로 찍은 것도 여기 모여요.
 6. **MCP 설정:** 상단 MCP 메뉴에서 주소, 토큰(누를 때만 보여요), `claude mcp add` 명령, `.mcp.json`을 복사할 수 있어요.
 7. **MCP:** `https://<호스트>/mcp` (Streamable HTTP). `Authorization: Bearer <MCP_TOKEN>`이나 Cloudflare Access 인증으로 붙어요.
-   - 브라우저: `browser_status`, `profile_open`, `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_press`, `browser_wait_for`, `browser_screenshot`, `browser_tabs`, `browser_select_tab`, `browser_close`
-   - 가상 마우스·키보드: `mouse_click`, `mouse_move`, `mouse_drag`, `mouse_wheel`, `keyboard_type` (좌표는 `browser_screenshot` 기준)
-   - 프로필: `profiles_list`, `profile_create`, `profile_delete`
-   - 작업·스케줄: `jobs_list`, `job_get`, `job_create`, `job_update`, `job_delete`, `job_run`, `runs_list`, `run_get`
-   - 데이터: `crawl_items`, `crawl_csv`
-   - 문서: `docs_list`, `doc_read`, `doc_write`, `doc_append`, `doc_delete`
-   - 이미지: `image_capture`, `images_list`, `image_get`, `image_delete`
-   - 화면: `viewer_quality`, `browser_wait_for_human`
+   도구는 주제별로 18개로 묶여 있고, 각 도구는 `action` 인자로 세부 동작을 골라요. 도구 설명 전체가 약 4,500토큰이에요.
+
+   | 도구 | 하는 일 |
+   |---|---|
+   | `browser` | status, open(프로필), close, goto, back, forward, reload, tabs, tab_new, tab_select, tab_close, ask_human, quality |
+   | `snapshot` | 접근성 트리와 요소 ref (boxes로 좌표 포함) |
+   | `screenshot` | 화면 PNG |
+   | `extract` | 선택자와 필드로 DOM을 표로 읽기 |
+   | `evaluate` | 페이지에서 JS 실행 (ref나 selector를 주면 그 요소가 `el`) |
+   | `act` | click, dblclick, fill, type, press, select, check, uncheck, hover, focus, scroll, upload |
+   | `wait` | selector, text, url, load 상태, ms |
+   | `input` | 좌표 기반 마우스와 키보드: click, move, drag, wheel, type, key |
+   | `page_log` | 콘솔, 페이지 오류, 실패한 요청, alert/confirm 기록과 처리 방식(수락/거절) |
+   | `files` | 내려받은 파일과 사람이 올린 파일 list, read, delete (`act upload`로 페이지에 넣기) |
+   | `bookmarks` | Chromium 북마크 list, add, update, delete, open |
+   | `history` | 방문 기록 |
+   | `profiles` | list, create, update, delete, cookies |
+   | `jobs` / `runs` / `crawl_data` | 작업 관리와 실행, 실행 기록, 수집 데이터(items, csv) |
+   | `docs` / `images` | 문서와 이미지 |
+
+8. **내 PC 파일 올리기:** 원격 페이지가 파일 선택창을 열면(인스타그램의 "컴퓨터에서 선택" 같은 버튼), 원격 컴퓨터의 파일 창 대신 대시보드에 "파일 선택" 배너가 떠요. 브라우저 화면 위의 **파일 올리기**로 내 PC의 파일을 고르면 그대로 페이지에 들어가요. 선택창이 없을 때 올린 파일은 보관만 되고, AI가 `act`의 upload로 `upload:<이름>`을 넣을 수 있어요. 파일 하나당 200MB까지예요(Cloudflare 무료 요금제는 요청 하나에 100MB까지라서 실제 한도는 그쪽이에요).
+9. **사람에게 요청:** 로그인 페이지나 봇 확인을 만나면 AI는 `browser`의 `ask_human`(kind: login, captcha, input, confirm)으로 사람을 불러요. 작업도 로그인 페이지로 튕기거나 봇 확인을 만나면 멈춰서 기다려요(`CHALLENGE_WAIT_MINUTES`, 기본 10분).
+   - 대시보드 브라우저 화면 위에 요청 배너가 뜨고, 탭 제목에 `(!)`가 붙고, 허용하면 데스크톱 알림도 와요.
+   - 원격 화면에서 처리한 뒤 **완료**를 누르거나, 로그인 폼이나 봇 확인이 사라지면 자동으로 이어서 진행해요. **거절**하면 AI나 작업이 그 사실을 받아요.
+   - `NOTIFY_URL`에 Discord나 Slack 웹훅, 또는 ntfy 주소를 넣으면 그쪽으로도 알려요.
 
 내부 Chrome은 1920x1080으로 고정되고, 원격 화면은 KasmVNC가 창 크기에 맞춰 보여 줘요. 상태줄의 화질 선택(낮음·보통·높음·최고·무손실)은 KasmVNC 자체 프리셋이고, 바꾸면 화면을 다시 불러와요(시작값은 `VNC_QUALITY`=medium). AI가 받는 스크린샷과 스냅샷은 원본 해상도 그대로예요.
 
-영어와 단축키는 원격 화면을 클릭한 뒤 그대로 치면 돼요. 한국어는 VNC로 칠 수 없어요(이유는 `docs/remote-view.md`). AI는 MCP의 `browser_fill`, `keyboard_type`으로 한국어를 넣을 수 있어요.
+영어와 단축키는 원격 화면을 클릭한 뒤 그대로 치면 돼요. 한국어는 VNC로 칠 수 없어요(이유는 `docs/remote-view.md`). AI는 MCP의 `act`(fill, type)나 `input`(type)으로 한국어를 넣을 수 있어요.
 
 브라우저는 한 번에 하나, 열린 프로필도 하나, 작업 실행도 한 번에 하나예요. MCP, 작업, 원격 화면이 같은 브라우저를 같이 써요. 예약 시각에 다른 작업이 돌고 있으면 그 회차는 건너뛰고 실패(skipped)로 기록돼요.
 

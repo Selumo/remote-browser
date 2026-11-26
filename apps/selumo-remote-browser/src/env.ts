@@ -25,6 +25,12 @@ const Env = z.object({
   COOKIE_SECURE: z.enum(["true", "false"]).default("true"),
   /** How long a job waits for a person to clear a bot check before failing. */
   CHALLENGE_WAIT_MINUTES: z.coerce.number().min(0).max(120).default(10),
+  /** Webhook that gets a message when a person is needed (Discord, Slack or ntfy style). */
+  NOTIFY_URL: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v : undefined))
+    .pipe(z.string().url().optional()),
   /** Time zone used to evaluate job cron schedules. */
   SCHEDULE_TZ: z.string().default("Asia/Seoul"),
 })

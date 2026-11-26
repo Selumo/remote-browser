@@ -10,6 +10,8 @@ import {
   type Page,
 } from "playwright"
 import { env } from "../env.js"
+import { watchDownloads, watchFileChooser } from "./files.js"
+import { watchPage } from "./pagelog.js"
 
 /**
  * One headful browser on the shared KasmVNC display, so the remote view shows exactly what the AI and the jobs
@@ -128,6 +130,8 @@ export async function openProfile(
     })
     const page = context.pages()[0] ?? (await context.newPage())
     const browser: ActiveBrowser = { profileId, engine, context, page }
+    for (const p of context.pages()) watch(p)
+    context.on("page", watch)
     // Follow popups opened by the page (target=_blank, window.open). Chrome also creates pages
     // with no opener, such as a prerendered new tab page, which must not steal the focus.
     context.on("page", (p) => {
@@ -153,6 +157,34 @@ export async function closeActive(): Promise<void> {
   const browser = active
   active = null
   if (browser) await browser.context.close().catch(() => undefined)
+}
+
+/** Page log, download capture and file chooser interception for every tab. */
+function watch(page: Page): void {
+  watchPage(page)
+  watchDownloads(page)
+  watchFileChooser(page)
+}
+
+export async function newTab(url?: string): Promise<Page> {
+  const browser = requireActive()
+  const page = await browser.context.newPage()
+  if (url) await page.goto(url)
+  await page.bringToFront()
+  browser.page = page
+  return page
+}
+
+export async function closeTab(index?: number): Promise<void> {
+  const browser = requireActive()
+  const pages = browser.context.pages()
+  const page = index === undefined ? browser.page : pages[index]
+  if (!page) throw new Error(`No tab at index ${index}`)
+  if (pages.length === 1) throw new Error("This is the last tab; use browser close instead")
+  await page.close()
+  const next = browser.context.pages().at(-1)!
+  await next.bringToFront()
+  browser.page = next
 }
 
 export function tabs(): { index: number; url: string; active: boolean }[] {
