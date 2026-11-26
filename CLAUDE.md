@@ -14,7 +14,7 @@ PocketBase and export them as CSV. Everything the dashboard can do, MCP can do t
 | Front end | htmx with the SSE extension, Alpine.js only where local UI state is needed. Served from node_modules, no CDN |
 | Data | PocketBase: dashboard users (auth), profiles, jobs, job runs, logs and crawl items. Bound to 127.0.0.1, used by the app as a superuser |
 | Browser | Playwright Chromium, headful on Xvfb, one persistent context per profile under `/data/profiles/<id>` |
-| Remote view | x11vnc + websockify, noVNC client served by the app at `/novnc/`, WebSocket proxied at `/websockify` |
+| Remote view | Xvfb at `SCREEN_WIDTH`x`SCREEN_HEIGHT` (1920x1080), x11vnc + websockify, a minimal noVNC viewer at `/viewer` with reduced JPEG quality (`VNC_QUALITY`), WebSocket proxied at `/websockify` |
 | AI access | MCP Streamable HTTP at `/mcp`, stateless per request, the browser state lives in the process. Includes a virtual mouse (`mouse_*`) |
 | Scheduling | croner inside the app process, one cron per enabled job, evaluated in `SCHEDULE_TZ` |
 | UI | Black and white, square, monospace. No colors, no radius, no theme work |

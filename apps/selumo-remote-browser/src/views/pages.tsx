@@ -128,7 +128,7 @@ export const BrowserPage: FC<{
   url: string | null
   running: string | null
 }> = ({ user, profiles, openProfile, url, running }) => (
-  <Layout title="브라우저 · Remote Browser" user={user} section="browser">
+  <Layout title="브라우저 · Remote Browser" user={user} section="browser" fill>
     <div class="grid">
       <section class="box">
         <h2>프로필</h2>
@@ -161,10 +161,10 @@ export const BrowserPage: FC<{
           </form>
         </div>
       </section>
-      <section class="box">
+      <section class="box screen">
         <h2>원격 브라우저</h2>
         <BrowserStatus profile={openProfile} url={url} running={running} />
-        <iframe class="vnc" src="/novnc/vnc_lite.html?scale=true&path=websockify" title="noVNC" />
+        <iframe class="vnc" src="/viewer" title="noVNC" />
       </section>
     </div>
   </Layout>

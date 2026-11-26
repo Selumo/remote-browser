@@ -32,7 +32,19 @@ button:hover, .btn:hover, button.primary { background: #000; color: #fff; }
 button.primary:hover { background: #fff; color: #000; }
 .tag { display: inline-block; padding: 0 6px; border: 1px solid #000; }
 .tag.on { background: #000; color: #fff; }
-.vnc { display: block; width: 100%; height: calc(100vh - 150px); min-height: 420px; border: 1px solid #000; background: #000; }
+.vnc { display: block; width: 100%; height: 100%; min-height: 0; flex: 1; border: 1px solid #000; background: #000; }
+/* Full-height pages (the remote browser): the window never scrolls, panels fit the viewport. */
+body.fill { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+body.fill main { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+body.fill .grid { height: 100%; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+body.fill .grid > .box { overflow: auto; }
+body.fill .grid > .box.screen { display: flex; flex-direction: column; overflow: hidden; }
+body.fill .grid > .box.screen > #browser-status p { margin: 0 0 8px; }
+@media (max-width: 960px) {
+  body.fill { height: auto; overflow: auto; }
+  body.fill .grid { height: auto; }
+  body.fill .vnc { height: 60vh; flex: none; }
+}
 .log { margin: 0; padding: 0; list-style: none; max-height: 380px; overflow: auto; }
 .log li { padding: 1px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log li.error, .error { font-weight: bold; text-decoration: underline; }
@@ -41,12 +53,13 @@ form p { margin: 10px 0 0; }
 
 export type Section = "browser" | "jobs" | null
 
-export const Layout: FC<{ title: string; user?: string; section?: Section; children: Child }> = ({
-  title,
-  user,
-  section,
-  children,
-}) => (
+export const Layout: FC<{
+  title: string
+  user?: string
+  section?: Section
+  fill?: boolean
+  children: Child
+}> = ({ title, user, section, fill, children }) => (
   <html lang="ko">
     <head>
       <meta charset="utf-8" />
@@ -57,7 +70,7 @@ export const Layout: FC<{ title: string; user?: string; section?: Section; child
       <script src="/vendor/htmx-sse.js" defer />
       <script src="/vendor/alpine.js" defer />
     </head>
-    <body>
+    <body class={fill ? "fill" : ""}>
       {user ? (
         <header>
           <strong>REMOTE BROWSER</strong>

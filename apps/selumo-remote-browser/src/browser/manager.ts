@@ -47,6 +47,8 @@ export async function openProfile(profileId: string, startUrl?: string): Promise
       viewport: null,
       args: [
         "--start-maximized",
+        "--window-position=0,0",
+        `--window-size=${env.SCREEN_WIDTH},${env.SCREEN_HEIGHT}`,
         "--no-first-run",
         "--no-default-browser-check",
         "--hide-crash-restore-bubble",

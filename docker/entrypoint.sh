@@ -8,7 +8,8 @@ set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/data}"
 DISPLAY="${DISPLAY:-:99}"
-SCREEN="${SCREEN:-1600x900x24}"
+# The browser always renders at this size; noVNC only scales and compresses what it sends.
+SCREEN="${SCREEN_WIDTH:-1920}x${SCREEN_HEIGHT:-1080}x24"
 MIGRATIONS=/app/pocketbase/remote-browser/pb_migrations
 export DISPLAY
 
@@ -29,8 +30,13 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 
+# No fluxbox toolbar, so the maximized Chromium window covers the whole screen.
+mkdir -p "$HOME/.fluxbox"
+printf 'session.screen0.toolbar.visible: false\n' > "$HOME/.fluxbox/init"
 fluxbox >/dev/null 2>&1 &
-x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -quiet -xkb &
+# -wait/-defer (ms) batch screen updates: fewer frames, less CPU while someone is watching.
+x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -quiet -xkb \
+  -wait "${VNC_WAIT_MS:-40}" -defer "${VNC_DEFER_MS:-40}" &
 websockify 127.0.0.1:6080 127.0.0.1:5900 >/dev/null 2>&1 &
 
 node /app/apps/selumo-remote-browser/dist/index.js &

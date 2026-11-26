@@ -45,6 +45,7 @@ import {
   updateJob,
 } from "./services.js"
 import { serveFile, vendorFiles } from "./static.js"
+import { viewerHtml } from "./views/viewer.js"
 import {
   BrowserPage,
   BrowserStatus,
@@ -120,6 +121,10 @@ app.post("/logout", (c) => {
 
 app.get("/novnc/*", requireUser, (c) =>
   serveFile(env.NOVNC_DIR, c.req.path.slice("/novnc/".length)),
+)
+
+app.get("/viewer", requireUser, (c) =>
+  c.html(viewerHtml({ quality: env.VNC_QUALITY, compression: env.VNC_COMPRESSION })),
 )
 
 // ---- browser ----
