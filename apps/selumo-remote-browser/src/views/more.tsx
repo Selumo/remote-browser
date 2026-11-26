@@ -56,6 +56,18 @@ export const DocsPage: FC<{
             </button>
           </p>
         </form>
+        <h3>사이트 플레이북</h3>
+        <p class="muted">
+          사이트마다 일하는 요령을 적어 두면 AI가 그 사이트에 들어갈 때 먼저 읽어요. AI도 일하면서
+          배운 걸 덧붙여요.
+        </p>
+        <form method="get" action="/docs/playbook" class="row" style="flex-wrap:nowrap">
+          <input name="host" placeholder="instagram.com" required />
+          <button type="submit">열기 / 만들기</button>
+        </form>
+        <p>
+          <a href="/docs?tag=playbook">플레이북 모아 보기</a>
+        </p>
         {tags.length ? (
           <>
             <h3>태그</h3>

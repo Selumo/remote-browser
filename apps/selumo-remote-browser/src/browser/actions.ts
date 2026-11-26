@@ -2,6 +2,7 @@ import type { Locator, Page } from "playwright"
 import { challengeNote, checkChallenge } from "./challenge.js"
 import { pendingChooser } from "./files.js"
 import { detectLogin, loginNote } from "./login.js"
+import { playbookNote } from "./playbook.js"
 
 export type Target = { ref?: string | undefined; selector?: string | undefined }
 
@@ -33,7 +34,8 @@ export async function pageSummary(page: Page): Promise<string> {
       `and no ref. Files from the person's computer arrive as "upload:<name>" (files list); ask_human ` +
       `kind "input" to ask them to send one through the dashboard.`
     : ""
-  return `url: ${shown}\ntitle: ${title}${challengeNote(challenge)}${loginNote(login)}${fileNote}`
+  const playbook = await playbookNote(url).catch(() => "")
+  return `url: ${shown}\ntitle: ${title}${challengeNote(challenge)}${loginNote(login)}${fileNote}${playbook}`
 }
 
 /**

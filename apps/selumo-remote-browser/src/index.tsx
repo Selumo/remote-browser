@@ -39,6 +39,7 @@ import { nextRun, startScheduler } from "./jobs/scheduler.js"
 import { buildMcpServer } from "./mcp.js"
 import { answerHelp, currentHelp } from "./browser/help.js"
 import { detectLogin } from "./browser/login.js"
+import { PLAYBOOK_PREFIX, playbookTemplate } from "./browser/playbook.js"
 import { addBookmark, deleteBookmark, listBookmarks, type Bookmark } from "./browser/bookmarks.js"
 import {
   cancelChooser,
@@ -604,10 +605,29 @@ app.post("/docs/preview", requireUser, async (c) => {
 })
 
 /** [[Title]] links land here; a missing note opens the editor so it can be created. */
+/** 새 플레이북: the host becomes the title "플레이북: <host>" and opens its page or editor. */
+app.get("/docs/playbook", requireUser, (c) => {
+  const raw = (c.req.query("host") ?? "").trim()
+  let host = raw
+  try {
+    host = new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.replace(/^www\./, "")
+  } catch {
+    return c.redirect("/docs")
+  }
+  return c.redirect(docHref(`${PLAYBOOK_PREFIX}${host}`))
+})
+
 app.get("/docs/t/:title", requireUser, async (c) => {
   const title = c.req.param("title")
   const doc = await findDoc(title)
-  if (!doc) return c.html(<DocEditPage user={c.get("user")} doc={{ title, body: "" }} preview="" />)
+  if (!doc) {
+    const body = title.startsWith(PLAYBOOK_PREFIX)
+      ? playbookTemplate(title.slice(PLAYBOOK_PREFIX.length).trim())
+      : ""
+    return c.html(
+      <DocEditPage user={c.get("user")} doc={{ title, body }} preview={renderMarkdown(body)} />,
+    )
+  }
   return c.html(
     <DocPage
       user={c.get("user")}

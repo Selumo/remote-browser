@@ -114,7 +114,10 @@ export async function saveDoc(input: {
   await ensureSuperuser()
   const title = input.title.trim()
   if (!title) throw new Error("title is required")
-  const data = { title, body: input.body, tags: hashTags(input.body) }
+  // Playbooks ("플레이북: <host>") are always tagged so they can be listed together.
+  const tags = hashTags(input.body)
+  if (title.startsWith("플레이북: ") && !tags.includes("playbook")) tags.push("playbook")
+  const data = { title, body: input.body, tags }
   const existing = input.ref ? await findDoc(input.ref) : await findDoc(title)
   if (existing) return pb.collection("docs").update<Doc>(existing.id, data)
   return pb.collection("docs").create<Doc>(data)

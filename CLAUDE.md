@@ -32,7 +32,8 @@ apps/selumo-remote-browser/src/
   browser/         The single shared Playwright context and AI-facing helpers: page log and
                    dialogs, files (downloads, uploads from people, intercepted file choosers),
                    bookmarks (chrome://bookmarks API), history, login detection and requests
-                   for a person (help.ts)
+                   for a person (help.ts), site playbooks (playbook.ts: notes titled
+                   "플레이북: <host>" pointed at from page summaries)
   jobs/            Step schema, runner, cron scheduler, crawl extraction, CSV
   docs.ts          Markdown notes: [[wiki links]], ![[image]] embeds, #tags, backlinks
   images.ts        Stored images (captures, uploads, job screenshots) in PocketBase

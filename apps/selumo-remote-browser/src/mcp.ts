@@ -19,6 +19,7 @@ import {
 } from "./browser/files.js"
 import { askHuman, currentHelp } from "./browser/help.js"
 import { readHistory } from "./browser/history.js"
+import { findPlaybook, playbookTitle } from "./browser/playbook.js"
 import {
   closeActive,
   closeTab,
@@ -142,6 +143,8 @@ export function buildMcpServer(): McpServer {
         "Real Chromium on a remote desktop; logins persist per profile. Flow: profiles list -> " +
         "browser open -> snapshot -> act with refs. extract/evaluate read the DOM. Use screenshot + " +
         "input for canvas/maps. Never solve CAPTCHAs or guess passwords: browser ask_human gets a person. " +
+        "Site playbooks are notes titled '플레이북: <host>': read one before working on a site " +
+        "(docs playbook) and append what you learned (steps that worked, selectors, pitfalls) when done. " +
         "One profile and one job run at a time; a person may be watching.",
     },
   )
@@ -203,6 +206,7 @@ export function buildMcpServer(): McpServer {
               running_run: runningRunId(),
               bot_check: c ? { kind: c.kind, url: c.url } : null,
               waiting_for_person: currentHelp(),
+              playbook: (await findPlaybook(browser.page.url()).catch(() => null))?.title ?? null,
               downloads: pendingDownloads(),
               file_chooser_open: pendingChooser(),
             })
@@ -935,10 +939,12 @@ export function buildMcpServer(): McpServer {
     {
       description:
         "Markdown notes ([[Title]] links, ![[image title]] embeds, #tags). list(query?, tag?) | read(doc) | " +
+        "playbook(host?: the site playbook for the open page or a host, with its title even when missing) | " +
         "write(title, body, doc?: create, replace or rename) | append(doc, body; creates if missing) | delete(doc).",
       inputSchema: {
-        action: z.enum(["list", "read", "write", "append", "delete"]),
+        action: z.enum(["list", "read", "playbook", "write", "append", "delete"]),
         doc: z.string().optional().describe("Title or id"),
+        host: z.string().optional().describe("playbook: e.g. instagram.com"),
         title: z.string().min(1).max(200).optional(),
         body: z.string().max(1_000_000).optional(),
         query: z.string().optional(),
@@ -958,6 +964,19 @@ export function buildMcpServer(): McpServer {
               })),
               tags: await allTags(),
             })
+          }
+          case "playbook": {
+            const url = a.host
+              ? `https://${a.host.replace(/^https?:\/\//, "")}`
+              : requireActive().page.url()
+            const found = await findPlaybook(url)
+            if (!found) throw new Error("Give host, or open a web page first")
+            if (!found.title)
+              return text(
+                `No playbook for ${found.host}. Create one with docs write title "${playbookTitle(found.host)}".`,
+              )
+            const d = await getDoc(found.title)
+            return text(`# ${d.title}\nupdated ${d.updated}\n\n${d.body}`)
           }
           case "read": {
             const d = await getDoc(need(a.doc, "doc"))
