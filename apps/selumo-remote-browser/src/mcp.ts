@@ -17,7 +17,7 @@ import {
   readStored,
   type Store,
 } from "./browser/files.js"
-import { askHuman, currentHelp } from "./browser/help.js"
+import { askHuman, currentHelp, helpStatus, requestHelp } from "./browser/help.js"
 import { readHistory } from "./browser/history.js"
 import { findPlaybook, playbookTitle } from "./browser/playbook.js"
 import {
@@ -135,7 +135,8 @@ async function uploadFiles(files: string[]) {
   )
 }
 
-export function buildMcpServer(): McpServer {
+export function buildMcpServer(origin = ""): McpServer {
+  const takeoverUrl = (id: string) => `${origin}/takeover/${id}`
   const server = new McpServer(
     { name: "selumo-remote-browser", version: "0.3.0" },
     {
@@ -156,9 +157,10 @@ export function buildMcpServer(): McpServer {
     {
       description:
         "Session and navigation. status | open(profile) | close | goto(url) | back | forward | reload | " +
-        "tabs | tab_new(url?) | tab_select(index) | tab_close(index?) | ask_human(kind, message?, timeout_seconds?: " +
-        "ask the person to log in / clear a captcha / type something only they know / confirm, through the " +
-        "remote view; waits until done) | quality(quality?: remote view stream preset).",
+        "tabs | tab_new(url?) | tab_select(index) | tab_close(index?) | ask_human(kind, message?: asks the " +
+        "person to log in / clear a captcha / type something only they know / confirm; returns at once " +
+        "with a link to give them (phone-friendly takeover page); wait=true blocks until done) | " +
+        "help_status(id?: pending, done, cancelled or timeout) | quality(quality?: remote view stream preset).",
       inputSchema: {
         action: z.enum([
           "status",
@@ -173,6 +175,7 @@ export function buildMcpServer(): McpServer {
           "tab_select",
           "tab_close",
           "ask_human",
+          "help_status",
           "quality",
         ]),
         profile: z.string().optional().describe("open: profile id or name"),
@@ -180,13 +183,15 @@ export function buildMcpServer(): McpServer {
         index: z.number().int().min(0).optional().describe("Tab index"),
         kind: z.enum(["login", "captcha", "input", "confirm"]).optional().describe("ask_human"),
         message: z.string().max(300).optional().describe("ask_human: shown to the person"),
+        wait: z.boolean().optional().describe("ask_human: block until done (default false)"),
+        id: z.string().optional().describe("help_status: request id"),
         timeout_seconds: z
           .number()
           .int()
           .min(5)
-          .max(1800)
+          .max(3600)
           .optional()
-          .describe("ask_human, default 600"),
+          .describe("ask_human: how long the request stays open, default 1800"),
         quality: z.enum(["low", "medium", "high", "extreme", "lossless"]).optional(),
       },
     },
@@ -205,7 +210,9 @@ export function buildMcpServer(): McpServer {
               tabs: tabs(),
               running_run: runningRunId(),
               bot_check: c ? { kind: c.kind, url: c.url } : null,
-              waiting_for_person: currentHelp(),
+              waiting_for_person: currentHelp()
+                ? { ...currentHelp(), link: takeoverUrl(currentHelp()!.id) }
+                : null,
               playbook: (await findPlaybook(browser.page.url()).catch(() => null))?.title ?? null,
               downloads: pendingDownloads(),
               file_chooser_open: pendingChooser(),
@@ -246,18 +253,36 @@ export function buildMcpServer(): McpServer {
             return json(tabs())
           case "ask_human": {
             requireActive()
-            const outcome = await askHuman(() => requireActive().page, {
-              kind: a.kind ?? "login",
+            const input = {
+              kind: a.kind ?? ("login" as const),
               message: a.message,
               from: "mcp",
-              timeoutMs: (a.timeout_seconds ?? 600) * 1000,
-            })
+              timeoutMs: (a.timeout_seconds ?? 1800) * 1000,
+            }
+            const req = await requestHelp(() => requireActive().page, input)
+            const link = takeoverUrl(req.id)
+            if (!a.wait)
+              return text(
+                `Asked the person (${req.kind}, id ${req.id}). Give them this link to do it from a ` +
+                  `phone or computer: ${link}\nIt ends by itself when the page shows it is done, or ` +
+                  `when they press 완료/거절. Check with browser help_status, then continue.`,
+              )
+            const outcome = await askHuman(() => requireActive().page, input)
             const said = {
               done: "the person finished",
               cancelled: "the person declined",
               timeout: "no answer (timed out)",
             }[outcome]
             return text(`${said}\n${await pageSummary(requireActive().page)}`)
+          }
+          case "help_status": {
+            const st = helpStatus(a.id)
+            if (!st) return text("No request for a person has been made yet.")
+            const page = current()?.page
+            return text(
+              `${st.id} ${st.kind} ${st.outcome}${st.outcome === "pending" ? ` (link: ${takeoverUrl(st.id)})` : ""}` +
+                (page ? `\n${await pageSummary(page)}` : ""),
+            )
           }
           case "quality":
             if (a.quality) setQuality(a.quality, "mcp")

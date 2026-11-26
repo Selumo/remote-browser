@@ -32,7 +32,8 @@ apps/selumo-remote-browser/src/
   browser/         The single shared Playwright context and AI-facing helpers: page log and
                    dialogs, files (downloads, uploads from people, intercepted file choosers),
                    bookmarks (chrome://bookmarks API), history, login detection and requests
-                   for a person (help.ts), site playbooks (playbook.ts: notes titled
+                   for a person (help.ts, non-blocking with a /takeover link), phone view
+                   (phoneview.ts: temporary mobile-width emulation for /takeover), site playbooks (playbook.ts: notes titled
                    "플레이북: <host>" pointed at from page summaries)
   jobs/            Step schema, runner, cron scheduler, crawl extraction, CSV
   docs.ts          Markdown notes: [[wiki links]], ![[image]] embeds, #tags, backlinks
@@ -41,7 +42,8 @@ apps/selumo-remote-browser/src/
   setup.ts         One-line installers for Claude Code and Claude Desktop (/setup/*.sh)
   mcp.ts           MCP tools, 18 grouped by subject with an `action` argument; compact JSON
                    output. Add new actions to an existing tool before adding a tool
-  views/           hono/jsx pages (more.tsx: docs, data, images, MCP setup; kasm.ts: viewer CSS)
+  views/           hono/jsx pages (more.tsx: docs, data, images, MCP setup; kasm.ts: viewer CSS;
+                   takeover.tsx: phone control page, screenshots + taps + native text input)
 pocketbase/remote-browser/pb_migrations/   JS migrations, applied when PocketBase starts
 docker/            Dockerfile and entrypoint for the single container
 docs/              Notes for maintainers (remote-view.md: KasmVNC findings)

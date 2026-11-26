@@ -20,7 +20,7 @@ import {
 } from "./auth.js"
 import { profileCookies, summarize } from "./browser/cookies.js"
 import { currentQuality, QUALITIES, setQuality } from "./browser/vnc.js"
-import { closeActive, current, openProfile } from "./browser/manager.js"
+import { closeActive, current, openProfile, selectTab, tabs } from "./browser/manager.js"
 import {
   allTags,
   backlinks,
@@ -39,7 +39,9 @@ import { nextRun, startScheduler } from "./jobs/scheduler.js"
 import { buildMcpServer } from "./mcp.js"
 import { accessConfigured, accessIdentity } from "./cfaccess.js"
 import { claudeCodeScript, claudeDesktopScript } from "./setup.js"
-import { answerHelp, currentHelp } from "./browser/help.js"
+import { answerHelp, currentHelp, helpLabel, helpStatus } from "./browser/help.js"
+import { TakeoverPage } from "./views/takeover.js"
+import { phoneViewOn, setPhoneView, touchPhoneView } from "./browser/phoneview.js"
 import { detectLogin } from "./browser/login.js"
 import { PLAYBOOK_PREFIX, playbookTemplate } from "./browser/playbook.js"
 import { addBookmark, deleteBookmark, listBookmarks, type Bookmark } from "./browser/bookmarks.js"
@@ -124,6 +126,10 @@ async function openProfileRecord(): Promise<Profile | null> {
   return findProfile(id).catch(() => null)
 }
 
+/** Only same-site paths, so the login page cannot be used to redirect elsewhere. */
+const safeNext = (v: string | undefined | null) =>
+  v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/\\") ? v : undefined
+
 const formText = (form: FormData, key: string) => String(form.get(key) ?? "").trim()
 
 app.get("/healthz", (c) => c.text("ok"))
@@ -136,15 +142,21 @@ app.get("/vendor/:file", async (c) => {
 
 // ---- auth ----
 
-app.get("/login", (c) => c.html(<LoginPage />))
+app.get("/login", (c) => c.html(<LoginPage next={safeNext(c.req.query("next"))} />))
 
 app.post("/login", async (c) => {
   const form = await c.req.formData()
   try {
     setSession(c, await login(formText(form, "email"), String(form.get("password") ?? "")))
-    return c.redirect("/")
+    return c.redirect(safeNext(formText(form, "next")) ?? "/")
   } catch {
-    return c.html(<LoginPage error="이메일 또는 비밀번호가 맞지 않아요." />, 401)
+    return c.html(
+      <LoginPage
+        error="이메일 또는 비밀번호가 맞지 않아요."
+        next={safeNext(formText(form, "next"))}
+      />,
+      401,
+    )
   }
 })
 
@@ -247,10 +259,12 @@ app.get("/partials/status", requireUser, async (c) => {
 })
 
 /** The banner's 완료 / 취소 buttons answer the request a person was asked for. */
-app.post("/help/:id/:outcome", requireUser, (c) => {
+app.post("/help/:id/:outcome", requireUser, async (c) => {
   const outcome = c.req.param("outcome")
   if (outcome !== "done" && outcome !== "cancelled") return c.text("bad outcome", 400)
   answerHelp(c.req.param("id"), outcome)
+  await setPhoneView(false)
+  if (!c.req.header("hx-request")) return c.json({ ok: true })
   return c.redirect("/partials/status", 303)
 })
 
@@ -570,6 +584,95 @@ app.get("/runs/:id/stream", requireUser, (c) =>
     }
   }),
 )
+
+// ---- takeover: phone-friendly control for a person (login, captcha, input) ----
+
+app.get("/takeover/shot.jpg", requireUser, async (c) => {
+  const page = current()?.page
+  if (!page || page.isClosed()) return c.text("no browser", 404)
+  touchPhoneView()
+  const jpg = await page.screenshot({ type: "jpeg", quality: 55, scale: "css", timeout: 10_000 })
+  return c.body(new Uint8Array(jpg), 200, {
+    "content-type": "image/jpeg",
+    "cache-control": "no-store",
+  })
+})
+
+app.get("/takeover/status.json", requireUser, (c) => {
+  const st = helpStatus(c.req.query("id") || undefined)
+  return c.json({
+    outcome: st?.outcome ?? null,
+    url: current()?.page.url() ?? null,
+    phone: phoneViewOn(),
+  })
+})
+
+app.post("/takeover/act", requireUser, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    op?: string
+    x?: number
+    y?: number
+    text?: string
+    enter?: boolean
+    key?: string
+    dy?: number
+    on?: boolean
+  }
+  const browser = current()
+  if (!browser) return c.json({ error: "열린 브라우저가 없어요" }, 409)
+  const page = browser.page
+  try {
+    switch (body.op) {
+      case "click":
+        await page.mouse.click(Number(body.x), Number(body.y))
+        break
+      case "type":
+        if (body.text) await page.keyboard.insertText(String(body.text).slice(0, 5000))
+        if (body.enter) await page.keyboard.press("Enter")
+        break
+      case "key":
+        if (!/^(Enter|Tab|Backspace|Escape|Control\+A)$/.test(String(body.key)))
+          throw new Error("bad key")
+        await page.keyboard.press(String(body.key))
+        break
+      case "scroll":
+        await page.mouse.wheel(0, Math.max(-3000, Math.min(3000, Number(body.dy) || 0)))
+        break
+      case "back":
+        await page.goBack({ timeout: 15_000 }).catch(() => null)
+        break
+      case "reload":
+        await page.reload({ timeout: 30_000 })
+        break
+      case "phone":
+        return c.json({ ok: true, phone: await setPhoneView(Boolean(body.on)) })
+      case "tabs": {
+        const list = tabs()
+        const next = (list.findIndex((t) => t.active) + 1) % list.length
+        await selectTab(next)
+        break
+      }
+      default:
+        throw new Error("unknown op")
+    }
+    return c.json({ ok: true, url: current()?.page.url() ?? null })
+  } catch (e) {
+    return c.json({ error: message(e) }, 400)
+  }
+})
+
+app.get("/takeover/:id?", requireUser, (c) => {
+  const raw = c.req.param("id") ?? ""
+  const id = /^[a-z0-9]{1,16}$/.test(raw) ? raw : null
+  const st = id ? helpStatus(id) : null
+  return c.html(
+    <TakeoverPage
+      id={st ? st.id : null}
+      label={st ? helpLabel(st.kind) + (st.site ? ` (${st.site})` : "") : null}
+      message={st ? st.message : null}
+    />,
+  )
+})
 
 // ---- docs (markdown notes) ----
 
@@ -902,7 +1005,7 @@ app.onError((e, c) => {
 async function serveMcp(c: Context<App>) {
   const body: unknown = await c.req.json().catch(() => null)
   if (body === null) return c.json({ error: "invalid JSON" }, 400)
-  const server = buildMcpServer()
+  const server = buildMcpServer(publicOrigin(c))
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

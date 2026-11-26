@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events"
 import type { Page } from "playwright"
 import { checkChallenge } from "../browser/challenge.js"
-import { askHuman } from "../browser/help.js"
+import { askHuman, requestHelp } from "../browser/help.js"
 import { detectLogin } from "../browser/login.js"
 import { openProfile, requireActive } from "../browser/manager.js"
 import { env } from "../env.js"
@@ -170,12 +170,15 @@ async function pauseForPerson(step: Step, runId: string, job: Job): Promise<void
     "error",
     `${what}. 대시보드 원격 화면에서 직접 처리해 주세요 (최대 ${minutes}분 대기)`,
   )
-  const outcome = await askHuman(() => requireActive().page, {
+  const input = {
     kind,
     message: `작업 "${job.name}": ${what}`,
     from: `job ${job.name}`,
     timeoutMs: minutes * 60_000,
-  })
+  } as const
+  const req = await requestHelp(() => requireActive().page, input)
+  await log(runId, "info", `휴대폰에서도 처리할 수 있어요: /takeover/${req.id}`)
+  const outcome = await askHuman(() => requireActive().page, input)
   if (outcome !== "done")
     throw new Error(
       `${what} (${outcome === "cancelled" ? "cancelled" : `not handled within ${minutes} min`})`,

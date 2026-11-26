@@ -38,6 +38,6 @@ export async function detectLogin(page: Page): Promise<LoginWall | null> {
 export function loginNote(wall: LoginWall | null): string {
   return wall
     ? `\n\n⚠ LOGIN PAGE (${wall.site}). If you were not given credentials, call browser ` +
-        `ask_human with kind "login" so the person logs in through the remote view.`
+        `ask_human kind "login": it returns a link to send the person; check back with help_status.`
     : ""
 }

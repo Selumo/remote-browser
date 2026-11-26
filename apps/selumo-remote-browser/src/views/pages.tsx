@@ -26,11 +26,12 @@ const fmt = (iso: string | null | undefined) => {
   return Number.isNaN(d.getTime()) ? iso : clock.format(d)
 }
 
-export const LoginPage: FC<{ error?: string }> = ({ error }) => (
+export const LoginPage: FC<{ error?: string; next?: string | undefined }> = ({ error, next }) => (
   <Layout title="로그인 · Remote Browser">
     <div class="box" style="max-width:360px;margin:10vh auto">
       <h2>Remote Browser</h2>
       <form method="post" action="/login">
+        {next ? <input type="hidden" name="next" value={next} /> : null}
         <label for="email">이메일</label>
         <input id="email" name="email" type="email" autocomplete="username" required />
         <label for="password">비밀번호</label>
@@ -138,6 +139,9 @@ export const BrowserStatus: FC<{
           {help.from === "mcp" ? "AI" : help.from}가 기다리는 중. 아래 화면에서 처리한 뒤 완료를
           누르세요.
         </span>
+        <a class="btn" href={`/takeover/${help.id}`} target="_blank" style="border-color:#fff">
+          휴대폰용 화면
+        </a>
         <button
           type="button"
           class="primary"
@@ -173,6 +177,14 @@ export const BrowserControls: FC<{ quality: Quality }> = ({ quality }) => (
         </option>
       ))}
     </select>
+    <a
+      class="btn"
+      href="/takeover"
+      target="_blank"
+      title="휴대폰에 맞춘 조작 화면 (탭으로 클릭, 휴대폰 키보드로 입력)"
+    >
+      모바일 조작
+    </a>
     <label
       class="btn"
       title="내 PC의 파일을 원격 브라우저로 보내요. 페이지가 파일 선택창을 열었으면 바로 들어가요."

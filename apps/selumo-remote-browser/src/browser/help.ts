@@ -21,16 +21,39 @@ export type HelpRequest = {
   since: string
 }
 
-let open: (HelpRequest & { outcome?: HelpOutcome }) | null = null
+type Tracked = HelpRequest & { outcome?: HelpOutcome; ended?: string }
+
+/** The request waiting for a person, if any, and the most recent ones (for status checks). */
+let open: Tracked | null = null
+const recent: Tracked[] = []
 
 export function currentHelp(): HelpRequest | null {
   return open && !open.outcome ? open : null
 }
 
-/** Called by the dashboard buttons. */
+/** A request by id (or the latest one): pending, or how it ended. */
+export function helpStatus(
+  id?: string,
+): (HelpRequest & { outcome: HelpOutcome | "pending" }) | null {
+  const all = open ? [open, ...recent] : recent
+  const hit = id ? all.find((r) => r.id === id) : all[0]
+  return hit ? { ...hit, outcome: hit.outcome ?? "pending" } : null
+}
+
+function finish(req: Tracked, outcome: HelpOutcome): void {
+  if (req.outcome) return
+  req.outcome = outcome
+  req.ended = new Date().toISOString()
+  if (open?.id === req.id) open = null
+  recent.unshift(req)
+  recent.splice(10)
+  console.log(`[help] ${req.kind} request ${req.id} ended: ${outcome}`)
+}
+
+/** Called by the dashboard and takeover buttons. */
 export function answerHelp(id: string, outcome: "done" | "cancelled"): boolean {
   if (!open || open.id !== id || open.outcome) return false
-  open.outcome = outcome
+  finish(open, outcome)
   return true
 }
 
@@ -63,18 +86,26 @@ async function solved(kind: HelpKind, page: Page): Promise<boolean> {
   return false
 }
 
-export async function askHuman(
+/**
+ * Opens a request and returns at once; a watcher ends it when the page shows the problem is gone
+ * (login form or bot check no longer there), when the person answers, or after `timeoutMs`.
+ * An open request of the same kind is reused instead of failing.
+ */
+export async function requestHelp(
   getPage: () => Page,
   input: { kind: HelpKind; message?: string | undefined; from: string; timeoutMs: number },
-): Promise<HelpOutcome> {
-  if (currentHelp()) throw new Error("Another request is already waiting for a person")
+): Promise<HelpRequest> {
+  if (open && !open.outcome) {
+    if (open.kind === input.kind) return open
+    throw new Error(`Another request (${open.kind}) is already waiting for a person`)
+  }
   let site = ""
   try {
     site = new URL(getPage().url()).hostname
   } catch {
     // about:blank and similar
   }
-  const req: HelpRequest = {
+  const req: Tracked = {
     id: Math.random().toString(36).slice(2, 10),
     kind: input.kind,
     message: input.message || LABEL[input.kind],
@@ -85,21 +116,29 @@ export async function askHuman(
   open = req
   console.log(`[help] ${req.kind} requested by ${req.from}: ${req.message}`)
   void notify(req)
-  // Auto-detection only counts after the problem was actually seen, so asking before the login
-  // page has loaded does not end the request at once.
-  let seen = !(await solved(req.kind, getPage()).catch(() => true))
-  const until = Date.now() + input.timeoutMs
-  try {
-    while (Date.now() < until) {
-      if (open?.id === req.id && open.outcome) return open.outcome as HelpOutcome
+  void (async () => {
+    // Auto-detection only counts after the problem was actually seen, so asking before the login
+    // page has loaded does not end the request at once.
+    let seen = !(await solved(req.kind, getPage()).catch(() => true))
+    const until = Date.now() + input.timeoutMs
+    while (!req.outcome && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 2000))
+      if (req.outcome) return
       const ok = await solved(req.kind, getPage()).catch(() => false)
       if (!ok) seen = true
-      else if (seen && (req.kind === "login" || req.kind === "captcha")) return "done"
-      await new Promise((r) => setTimeout(r, 2000))
+      else if (seen && (req.kind === "login" || req.kind === "captcha")) return finish(req, "done")
     }
-    return "timeout"
-  } finally {
-    if (open?.id === req.id) open = null
-    console.log(`[help] ${req.kind} request ${req.id} ended`)
-  }
+    if (!req.outcome) finish(req, "timeout")
+  })()
+  return req
+}
+
+/** Blocking variant for jobs: opens a request and waits until it ends. */
+export async function askHuman(
+  getPage: () => Page,
+  input: { kind: HelpKind; message?: string | undefined; from: string; timeoutMs: number },
+): Promise<HelpOutcome> {
+  const req = (await requestHelp(getPage, input)) as Tracked
+  while (!req.outcome) await new Promise((r) => setTimeout(r, 1000))
+  return req.outcome
 }

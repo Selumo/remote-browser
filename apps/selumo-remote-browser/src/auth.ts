@@ -56,7 +56,9 @@ export const requireUser: MiddlewareHandler<AuthVars> = async (c, next) => {
       c.header("HX-Redirect", "/login")
       return c.body(null, 401)
     }
-    return c.redirect("/login")
+    // Come back to the same page after logging in (e.g. a takeover link opened on a phone).
+    const back = c.req.method === "GET" ? c.req.path + (new URL(c.req.url).search || "") : "/"
+    return c.redirect(back === "/" ? "/login" : `/login?next=${encodeURIComponent(back)}`)
   }
   c.set("user", email)
   await next()
