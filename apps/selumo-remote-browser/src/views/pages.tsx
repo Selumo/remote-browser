@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx"
+import type { CookieStatus, DomainSummary } from "../browser/cookies.js"
 import { STEP_HELP } from "../jobs/steps.js"
 import type { CrawlItem, Job, JobRun, Profile } from "../pb.js"
 import type { JobWithProfile } from "../services.js"
@@ -62,6 +63,13 @@ export const BrowserStatus: FC<{
         <>
           <span class="tag on">OPEN</span> <strong>{profile.name}</strong>{" "}
           <span class="muted">{url}</span>
+          <button
+            type="button"
+            onclick="document.querySelector('iframe.vnc')?.requestFullscreen()"
+            title="원격 화면을 전체화면으로 (Esc로 나가기)"
+          >
+            전체화면
+          </button>
           <button hx-post="/browser/close" hx-target="#browser-status" hx-swap="outerHTML">
             닫기
           </button>
@@ -127,7 +135,8 @@ export const BrowserPage: FC<{
   openProfile: Profile | null
   url: string | null
   running: string | null
-}> = ({ user, profiles, openProfile, url, running }) => (
+  screen: { width: number; height: number }
+}> = ({ user, profiles, openProfile, url, running, screen }) => (
   <Layout title="브라우저 · Remote Browser" user={user} section="browser" fill>
     <div class="grid">
       <section class="box">
@@ -164,7 +173,14 @@ export const BrowserPage: FC<{
       <section class="box screen">
         <h2>원격 브라우저</h2>
         <BrowserStatus profile={openProfile} url={url} running={running} />
-        <iframe class="vnc" src="/viewer" title="noVNC" />
+        <div class="vnc-wrap" style={`--sw:${screen.width};--sh:${screen.height}`}>
+          <iframe
+            class="vnc"
+            src="/viewer"
+            title="원격 브라우저 화면"
+            allow="fullscreen; clipboard-read; clipboard-write"
+          />
+        </div>
       </section>
     </div>
   </Layout>
@@ -512,6 +528,163 @@ export const JobDetailPage: FC<{
         />
         <RunsTable runs={p.runs} />
       </div>
+    </div>
+  </Layout>
+)
+
+// ---------- profiles ----------
+
+const STATUS_LABEL: Record<CookieStatus, string> = {
+  valid: "유효",
+  expiring: "곧 만료",
+  expired: "만료",
+  session: "세션",
+}
+
+const fmtUnix = (sec: number | null) =>
+  sec === null ? "-" : fmt(new Date(sec * 1000).toISOString())
+
+export const ProfilesPage: FC<{
+  user: string
+  profiles: Profile[]
+  openId: string | null
+  selected: Profile | null
+  source: "live" | "disk" | null
+  summary: DomainSummary[]
+}> = ({ user, profiles, openId, selected, source, summary }) => (
+  <Layout title="프로필 · Remote Browser" user={user} section="profiles">
+    <div class="grid">
+      <section class="box">
+        <h2>프로필</h2>
+        <table>
+          <tbody>
+            {profiles.length === 0 ? (
+              <tr>
+                <td class="muted">프로필 없음</td>
+              </tr>
+            ) : null}
+            {profiles.map((p) => (
+              <tr>
+                <td class="wrap" style={p.id === selected?.id ? "background:#000;color:#fff" : ""}>
+                  <a
+                    href={`/profiles?id=${p.id}`}
+                    style={p.id === selected?.id ? "color:#fff" : ""}
+                  >
+                    <strong>{p.name}</strong>
+                  </a>{" "}
+                  {p.id === openId ? <span class="tag on">OPEN</span> : null}
+                  <br />
+                  <span class={p.id === selected?.id ? "" : "muted"}>{p.start_url}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <h2 style="margin-top:16px">새 프로필</h2>
+        <form method="post" action="/profiles/new">
+          <label>이름</label>
+          <input name="name" required maxlength={100} placeholder="naver-main" />
+          <label>시작 URL (선택)</label>
+          <input name="start_url" type="url" placeholder="https://" />
+          <label>메모 (선택)</label>
+          <input name="notes" maxlength={2000} />
+          <p>
+            <button class="primary" type="submit">
+              만들기
+            </button>
+          </p>
+        </form>
+      </section>
+      <section class="box">
+        <h2>저장된 로그인</h2>
+        {!selected ? (
+          <p class="muted">왼쪽에서 프로필을 고르세요.</p>
+        ) : (
+          <>
+            <p class="row">
+              <strong>{selected.name}</strong>
+              <span class="muted">
+                {source === "live"
+                  ? "열린 브라우저에서 실시간으로 읽음"
+                  : "저장된 쿠키 파일에서 읽음"}{" "}
+                · 쿠키 값은 표시하지 않아요
+              </span>
+              <button hx-post={`/profiles/${selected.id}/open`} hx-swap="none">
+                브라우저에서 열기
+              </button>
+            </p>
+            {selected.notes ? <p class="muted">{selected.notes}</p> : null}
+            {summary.length === 0 ? (
+              <p class="muted">
+                저장된 쿠키가 없어요. 브라우저에서 열고 사이트에 로그인하면 여기에 나와요.
+              </p>
+            ) : (
+              <div class="scroll" style="max-height:none">
+                <details class="dom" open={false}>
+                  <summary class="head">
+                    <span>사이트</span>
+                    <span>상태</span>
+                    <span>로그인</span>
+                    <span>전체</span>
+                    <span>만료됨</span>
+                    <span>가장 늦은 만료</span>
+                  </summary>
+                </details>
+                {summary.map((g) => (
+                  <details class="dom">
+                    <summary>
+                      <span class="wrap">{g.domain}</span>
+                      <span>
+                        <span class={`tag ${g.status === "valid" ? "on" : ""}`}>
+                          {STATUS_LABEL[g.status]}
+                        </span>
+                      </span>
+                      <span>{g.login}</span>
+                      <span>{g.total}</span>
+                      <span>{g.expired}</span>
+                      <span>{fmtUnix(g.latestExpiry)}</span>
+                    </summary>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>쿠키</th>
+                          <th>상태</th>
+                          <th>만료</th>
+                          <th>속성</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.cookies.map((c) => (
+                          <tr>
+                            <td class="wrap">
+                              {c.loginLike ? <strong>{c.name}</strong> : c.name}
+                              {c.domain !== g.domain ? (
+                                <span class="muted"> ({c.domain})</span>
+                              ) : null}
+                            </td>
+                            <td>{STATUS_LABEL[c.status]}</td>
+                            <td>{fmtUnix(c.expires)}</td>
+                            <td class="muted">
+                              {[c.httpOnly ? "HttpOnly" : "", c.secure ? "Secure" : ""]
+                                .filter(Boolean)
+                                .join(" ")}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </details>
+                ))}
+              </div>
+            )}
+            <p class="muted">
+              로그인 쿠키는 이름(session, auth, token, NID_AUT 등)으로 추정해요. 사이트마다 실제
+              로그인 유지 여부는 다를 수 있어요. 일부 사이트는 쿠키 대신 localStorage에 토큰을
+              두는데, 그건 여기 나오지 않아요.
+            </p>
+          </>
+        )}
+      </section>
     </div>
   </Layout>
 )

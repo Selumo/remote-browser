@@ -3,6 +3,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import type { Page } from "playwright"
 import { z } from "zod"
 import { locate, pageSummary, settle, snapshot } from "./browser/actions.js"
+import { profileCookies, summarize } from "./browser/cookies.js"
+import { available, currentResolution, setResolution } from "./browser/vnc.js"
 import {
   closeActive,
   current,
@@ -262,6 +264,29 @@ export function buildMcpServer(): McpServer {
       }),
   )
 
+  server.registerTool(
+    "viewer_resolution",
+    {
+      description:
+        "Get or set the resolution people see in noVNC (the browser itself and screenshots stay full size).",
+      inputSchema: {
+        height: z
+          .number()
+          .int()
+          .optional()
+          .describe("1080, 720, 480 or 360. Omit to read the current one"),
+      },
+    },
+    ({ height }) =>
+      guarded(async () => {
+        if (height !== undefined) await setResolution(height)
+        return json({
+          resolution: `${currentResolution()}p`,
+          available: available().map((h) => `${h}p`),
+        })
+      }),
+  )
+
   // ---------- virtual mouse and keyboard ----------
 
   server.registerTool(
@@ -400,6 +425,48 @@ export function buildMcpServer(): McpServer {
         const record = await findProfile(profile)
         await deleteProfile(record.id)
         return text(`deleted profile "${record.name}"`)
+      }),
+  )
+
+  server.registerTool(
+    "profile_cookies",
+    {
+      description:
+        "Which sites a profile is logged in to: cookies grouped by site with login-like names, status " +
+        "(valid, expiring within 3 days, expired, session) and expiry. Cookie values are never returned.",
+      inputSchema: {
+        profile: z.string(),
+        domain: z.string().optional().describe("Only sites containing this text"),
+        details: z.boolean().optional().describe("Include each cookie's name, status and expiry"),
+      },
+    },
+    ({ profile, domain, details }) =>
+      guarded(async () => {
+        const record = await findProfile(profile)
+        const data = await profileCookies(record.id)
+        const sites = summarize(data.cookies).filter((g) => !domain || g.domain.includes(domain))
+        return json({
+          profile: record.name,
+          source: data.source,
+          sites: sites.map((g) => ({
+            site: g.domain,
+            status: g.status,
+            login_cookies: g.login,
+            total: g.total,
+            expired: g.expired,
+            latest_expiry: g.latestExpiry ? new Date(g.latestExpiry * 1000).toISOString() : null,
+            ...(details
+              ? {
+                  cookies: g.cookies.map((c) => ({
+                    name: c.name,
+                    login_like: c.loginLike,
+                    status: c.status,
+                    expires: c.expires ? new Date(c.expires * 1000).toISOString() : null,
+                  })),
+                }
+              : {}),
+          })),
+        })
       }),
   )
 

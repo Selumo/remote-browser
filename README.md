@@ -39,7 +39,7 @@ docker run --rm -p 3000:3000 --shm-size 2g --env-file .env -v rb-data:/data selu
    - 작업·스케줄: `jobs_list`, `job_get`, `job_create`, `job_update`, `job_delete`, `job_run`, `runs_list`, `run_get`
    - 데이터: `crawl_items`, `crawl_csv`
 
-내부 Chrome은 1920x1080으로 고정되고, noVNC로 보는 화면만 1280x720(`VNC_SCALE`)으로 줄이고 화질을 낮춰서 보내요(`VNC_QUALITY` 0~9, 기본 4). 클릭 좌표는 자동으로 원래 크기로 변환돼요. AI가 받는 스크린샷과 스냅샷은 원본 해상도 그대로예요.
+내부 Chrome은 1920x1080으로 고정되고, noVNC로 보는 화면만 해상도를 1080p·720p·480p·360p 중에서 골라 줄여서 보내요(뷰어 왼쪽 위 "설정", 시작값은 `VNC_SCALE`=720p). 클릭 좌표는 자동으로 원래 크기로 변환되고, AI가 받는 스크린샷과 스냅샷은 원본 해상도 그대로예요.
 
 브라우저는 한 번에 하나, 열린 프로필도 하나, 작업 실행도 한 번에 하나예요. MCP, 작업, noVNC가 같은 브라우저를 같이 써요. 예약 시각에 다른 작업이 돌고 있으면 그 회차는 건너뛰고 실패(skipped)로 기록돼요.
 

@@ -14,8 +14,7 @@ const Env = z.object({
   /** Size of the virtual screen and the Chromium window. Keep in step with SCREEN in the entrypoint. */
   SCREEN_WIDTH: z.coerce.number().int().min(320).default(1920),
   SCREEN_HEIGHT: z.coerce.number().int().min(320).default(1080),
-  /** noVNC JPEG quality 0 (smallest) to 9 (best), and zlib compression 0 to 9. Viewer only. */
-  VNC_QUALITY: z.coerce.number().int().min(0).max(9).default(4),
+  /** noVNC zlib compression 0 to 9. JPEG quality follows the chosen stream resolution. */
   VNC_COMPRESSION: z.coerce.number().int().min(0).max(9).default(6),
   MCP_TOKEN: z
     .string()

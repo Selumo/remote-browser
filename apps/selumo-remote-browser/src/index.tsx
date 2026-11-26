@@ -17,7 +17,9 @@ import {
   setSession,
   verifyToken,
 } from "./auth.js"
-import { closeActive, current, openProfile } from "./browser/manager.js"
+import { profileCookies, summarize } from "./browser/cookies.js"
+import { available, currentResolution, QUALITY_FOR, setResolution } from "./browser/vnc.js"
+import { closeActive, current, openProfile, requireActive } from "./browser/manager.js"
 import { env } from "./env.js"
 import { allItems, columnsOf, listItems, toCsv } from "./jobs/crawl.js"
 import { runEvents, runningRunId, startRun, type RunEvent } from "./jobs/runner.js"
@@ -53,6 +55,7 @@ import {
   JobDetailPage,
   JobsPage,
   LoginPage,
+  ProfilesPage,
   ProfileList,
   RunPanel,
   RunStatus,
@@ -124,10 +127,40 @@ app.get("/novnc/*", requireUser, (c) =>
 )
 
 app.get("/viewer", requireUser, (c) =>
-  c.html(viewerHtml({ quality: env.VNC_QUALITY, compression: env.VNC_COMPRESSION })),
+  c.html(
+    viewerHtml({
+      compression: env.VNC_COMPRESSION,
+      resolution: currentResolution(),
+      resolutions: available(),
+      qualityFor: QUALITY_FOR,
+    }),
+  ),
 )
 
+app.post("/viewer/resolution", requireUser, async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { height?: unknown } | null
+  try {
+    return c.json({ height: await setResolution(Number(body?.height)) })
+  } catch (e) {
+    return c.json({ error: message(e) }, 400)
+  }
+})
+
 // ---- browser ----
+
+/** Viewer panel: insert text at the remote focus. VNC clipboard is Latin-1 only, this is UTF-8. */
+app.post("/browser/insert-text", requireUser, async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { text?: unknown } | null
+  const text = typeof body?.text === "string" ? body.text : ""
+  if (!text || text.length > 20_000)
+    return c.json({ error: "text is required (max 20000 chars)" }, 400)
+  try {
+    await requireActive().page.keyboard.insertText(text)
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: message(e) }, 409)
+  }
+})
 
 app.get("/", requireUser, async (c) => {
   const [profiles, open] = await Promise.all([listProfiles(), openProfileRecord()])
@@ -138,6 +171,7 @@ app.get("/", requireUser, async (c) => {
       openProfile={open}
       url={current()?.page.url() ?? null}
       running={runningRunId()}
+      screen={{ width: env.SCREEN_WIDTH, height: env.SCREEN_HEIGHT }}
     />,
   )
 })
@@ -182,6 +216,35 @@ app.post("/profiles/:id/open", requireUser, async (c) => {
 app.post("/browser/close", requireUser, async (c) => {
   await closeActive()
   return c.html(<BrowserStatus profile={null} url={null} running={runningRunId()} />)
+})
+
+// ---- profiles ----
+
+app.get("/profiles", requireUser, async (c) => {
+  const profiles = await listProfiles()
+  const id = c.req.query("id")
+  const selected = (id ? profiles.find((p) => p.id === id) : profiles[0]) ?? null
+  const data = selected ? await profileCookies(selected.id) : null
+  return c.html(
+    <ProfilesPage
+      user={c.get("user")}
+      profiles={profiles}
+      openId={current()?.profileId ?? null}
+      selected={selected}
+      source={data?.source ?? null}
+      summary={data ? summarize(data.cookies) : []}
+    />,
+  )
+})
+
+app.post("/profiles/new", requireUser, async (c) => {
+  const form = await c.req.formData()
+  const profile = await createProfile({
+    name: formText(form, "name"),
+    start_url: formText(form, "start_url"),
+    notes: formText(form, "notes"),
+  })
+  return c.redirect(`/profiles?id=${profile.id}`)
 })
 
 // ---- jobs ----
